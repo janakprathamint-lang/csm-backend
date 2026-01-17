@@ -83,6 +83,7 @@
 
 //   next();
 // };
+/// <reference path="../@types/express/index.d.ts" />
 // auth.middleware.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
@@ -133,7 +134,7 @@ export const requireAuth = async (
       id: decoded.userId as any,
       role: decoded.role,
     };
-    
+
     next();
   } catch {
     return res.status(401).json({ message: "Invalid or expired token" });

@@ -1,5 +1,5 @@
 import { Request } from "express";
-import { Role } from "./../../types/role";
+import { Role } from "../../types/role";
 
 export interface AuthUser {
   id: number;
