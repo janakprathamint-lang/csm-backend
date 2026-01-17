@@ -214,7 +214,7 @@ export const preventDuplicateRequests = (
   });
 
   // Handle response errors
-  res.on("error", (error) => {
+  res.on("error", (error: Error) => {
     if (rejectPromise) {
       rejectPromise(error);
     }
