@@ -16,8 +16,9 @@ import { healthController } from "./controllers/health.controller";
 const app: Application = express();
 
 const allowedOrigins = [
+  'https://demo.easyvisa.ai',           // ✅ Deployed frontend
+  'https://demo-canada.easyvisa.ai',    // Alternative frontend
   process.env.FRONTEND_URL ?? "http://localhost:5173",
-  "https://demo-canada.easyvisa.ai",
   "http://localhost:4173"
 ].filter(Boolean); // Remove any undefined values
 
@@ -38,27 +39,42 @@ Object.keys(networkInterfaces).forEach((interfaceName) => {
 app.use(
   cors({
     origin: (origin, callback) => {
-      // allow requests with no origin (e.g., curl, mobile, server-to-server)
-      if (!origin) return callback(null, true);
-
-      // Allow localhost in any environment
-      if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
+      // Allow requests with no origin (Postman, mobile apps, server-to-server)
+      if (!origin) {
+        console.log('[CORS] ✅ Allowing request with no origin');
         return callback(null, true);
       }
 
-      // allow local dev by default
+      console.log('[CORS] Checking origin:', origin);
+
+      // ✅ Allow localhost in any environment
+      if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
+        console.log('[CORS] ✅ Allowing localhost origin:', origin);
+        return callback(null, true);
+      }
+
+      // ✅ Allow your deployed frontend
+      if (origin === 'https://demo.easyvisa.ai' || origin === 'https://demo-canada.easyvisa.ai') {
+        console.log('[CORS] ✅ Allowing deployed frontend:', origin);
+        return callback(null, true);
+      }
+
+      // ✅ Allow in development mode (more permissive)
       if (process.env.NODE_ENV !== "production") {
         // Allow network IPs in development
         if (networkIPs.some(ip => origin.startsWith(ip.replace(":5173", "")))) {
+          console.log('[CORS] ✅ Allowing network IP in development:', origin);
           return callback(null, true);
         }
 
         // Allow any local network IP in development (for testing)
         const localNetworkPattern = /^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/;
         if (localNetworkPattern.test(origin)) {
+          console.log('[CORS] ✅ Allowing local network IP in development:', origin);
           return callback(null, true);
         }
 
+        console.log('[CORS] ✅ Development mode - allowing origin:', origin);
         return callback(null, true); // Allow all in development
       }
 
@@ -68,17 +84,20 @@ app.use(
         return callback(null, true);
       }
 
-      // explicit allowlist for production
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // ✅ Check explicit allowlist for production
+      if (allowedOrigins.includes(origin)) {
+        console.log('[CORS] ✅ Origin in allowlist:', origin);
+        return callback(null, true);
+      }
 
-      // allow Replit host patterns (sisko.replit.dev) used by frontends
-      if (origin.includes("sisko.replit.dev")) return callback(null, true);
+      // ✅ Allow Replit host patterns (sisko.replit.dev) used by frontends
+      if (origin.includes("sisko.replit.dev")) {
+        console.log('[CORS] ✅ Allowing Replit host:', origin);
+        return callback(null, true);
+      }
 
-      // Log the rejected origin for debugging (this helps identify the frontend URL)
-      console.warn(`🚫 CORS BLOCKED: Origin "${origin}" is not in allowed list.`);
-      console.warn(`📋 Allowed origins:`, allowedOrigins);
-      console.warn(`💡 To fix: Add "${origin}" to FRONTEND_URL environment variable or allowedOrigins array`);
-
+      // ❌ Reject if we get here
+      console.error(`[CORS] ❌ Origin "${origin}" not allowed. Allowed origins:`, allowedOrigins);
       callback(new Error("CORS policy: origin not allowed"));
     },
     credentials: true,
