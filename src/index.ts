@@ -16,7 +16,7 @@ import { healthController } from "./controllers/health.controller";
 const app: Application = express();
 
 const allowedOrigins = [
-  process.env.FRONTEND_URL ?? "http://localhost:5173",
+  process.env.FRONTEND_URL ?? "http://localhost:5173", "https://demo-canada.easyvisa.ai",
 ];
 
 // Get network IP addresses for CORS
