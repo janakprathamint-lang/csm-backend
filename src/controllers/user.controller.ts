@@ -21,7 +21,7 @@ import {
 import { eq, gt, and } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { Role } from "../types/role";
-import { AuthenticatedRequest } from "./../@types/express/auth";
+import { AuthenticatedRequest } from "../types/express-auth";
 import { logActivity } from "../services/activityLog.service";
 /* ================================
    REGISTER

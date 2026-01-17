@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { AuthenticatedRequest } from "../@types/express/auth";
+import { AuthenticatedRequest } from "../types/express-auth";
 import { getActivityLogs, getActivityLogsCount } from "../models/activityLog.model";
 
 /**
