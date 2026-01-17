@@ -4,8 +4,8 @@ import { db } from "../config/databaseConnection";
 import { users } from "./../schemas/users.schema";
 
 async function seedAdmin() {
-  const email = "admin@test.com";
-  const password = "test@123";
+  const email = "admin@prathamint.com";
+  const password = "Pratham@123";
 
   const hashedPassword = await bcrypt.hash(password, 10);
 

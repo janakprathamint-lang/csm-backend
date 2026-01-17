@@ -16,8 +16,10 @@ import { healthController } from "./controllers/health.controller";
 const app: Application = express();
 
 const allowedOrigins = [
-  process.env.FRONTEND_URL ?? "http://localhost:5173", "https://demo-canada.easyvisa.ai",
-];
+  process.env.FRONTEND_URL ?? "http://localhost:5173",
+  "https://demo-canada.easyvisa.ai",
+  "http://localhost:4173"
+].filter(Boolean); // Remove any undefined values
 
 // Get network IP addresses for CORS
 const os = require("os");
@@ -39,13 +41,13 @@ app.use(
       // allow requests with no origin (e.g., curl, mobile, server-to-server)
       if (!origin) return callback(null, true);
 
+      // Allow localhost in any environment
+      if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
+        return callback(null, true);
+      }
+
       // allow local dev by default
       if (process.env.NODE_ENV !== "production") {
-        // Allow localhost
-        if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
-          return callback(null, true);
-        }
-
         // Allow network IPs in development
         if (networkIPs.some(ip => origin.startsWith(ip.replace(":5173", "")))) {
           return callback(null, true);
@@ -60,11 +62,22 @@ app.use(
         return callback(null, true); // Allow all in development
       }
 
+      // TEMPORARY: Allow all origins if ALLOW_ALL_ORIGINS is set (for testing only)
+      if (process.env.ALLOW_ALL_ORIGINS === "true") {
+        console.warn("⚠️  WARNING: CORS is allowing ALL origins. This should only be used for testing!");
+        return callback(null, true);
+      }
+
       // explicit allowlist for production
       if (allowedOrigins.includes(origin)) return callback(null, true);
 
       // allow Replit host patterns (sisko.replit.dev) used by frontends
       if (origin.includes("sisko.replit.dev")) return callback(null, true);
+
+      // Log the rejected origin for debugging (this helps identify the frontend URL)
+      console.warn(`🚫 CORS BLOCKED: Origin "${origin}" is not in allowed list.`);
+      console.warn(`📋 Allowed origins:`, allowedOrigins);
+      console.warn(`💡 To fix: Add "${origin}" to FRONTEND_URL environment variable or allowedOrigins array`);
 
       callback(new Error("CORS policy: origin not allowed"));
     },
