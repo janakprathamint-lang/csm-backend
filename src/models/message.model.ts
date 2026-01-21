@@ -27,7 +27,6 @@ export interface CreateBroadcastMessageInput {
   message: string;
   targetRoles: string[]; // ['manager', 'counsellor']
   priority?: MessagePriority;
-  displayDuration?: number; // 15-30 seconds
 }
 
 export interface CreateIndividualMessageInput {
@@ -35,7 +34,6 @@ export interface CreateIndividualMessageInput {
   message: string;
   targetUserIds: number[]; // [5, 10, 15]
   priority?: MessagePriority;
-  displayDuration?: number; // 15-30 seconds
 }
 
 export interface Message {
@@ -47,7 +45,6 @@ export interface Message {
   targetRoles: string[] | null;
   targetUserIds: number[] | null;
   priority: MessagePriority;
-  displayDuration: number;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -112,12 +109,6 @@ export const createBroadcastMessage = async (
     throw new Error(`Invalid roles: ${invalidRoles.join(", ")}`);
   }
 
-  // Validate display duration
-  const displayDuration = data.displayDuration || 30;
-  if (displayDuration < 15 || displayDuration > 30) {
-    throw new Error("Display duration must be between 15 and 30 seconds");
-  }
-
   // Validate priority
   const priority = data.priority || "normal";
   const validPriorities: MessagePriority[] = ["low", "normal", "high", "urgent"];
@@ -141,7 +132,6 @@ export const createBroadcastMessage = async (
       targetRoles: data.targetRoles,
       targetUserIds: [],
       priority,
-      displayDuration,
       isActive: true,
       updatedAt: new Date(),
     })
@@ -204,12 +194,6 @@ export const createIndividualMessage = async (
     );
   }
 
-  // Validate display duration
-  const displayDuration = data.displayDuration || 30;
-  if (displayDuration < 15 || displayDuration > 30) {
-    throw new Error("Display duration must be between 15 and 30 seconds");
-  }
-
   // Validate priority
   const priority = data.priority || "normal";
   const validPriorities: MessagePriority[] = ["low", "normal", "high", "urgent"];
@@ -233,7 +217,6 @@ export const createIndividualMessage = async (
       targetRoles: [],
       targetUserIds: data.targetUserIds,
       priority,
-      displayDuration,
       isActive: true,
       updatedAt: new Date(),
     })
@@ -342,7 +325,6 @@ export const getUnacknowledgedMessagesForUser = async (
       targetRoles: messages.targetRoles,
       targetUserIds: messages.targetUserIds,
       priority: messages.priority,
-      displayDuration: messages.displayDuration,
       isActive: messages.isActive,
       createdAt: messages.createdAt,
       updatedAt: messages.updatedAt,
@@ -401,7 +383,6 @@ export const getAllMessagesForUser = async (
       targetRoles: messages.targetRoles,
       targetUserIds: messages.targetUserIds,
       priority: messages.priority,
-      displayDuration: messages.displayDuration,
       isActive: messages.isActive,
       createdAt: messages.createdAt,
       updatedAt: messages.updatedAt,

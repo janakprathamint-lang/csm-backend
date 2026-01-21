@@ -59,8 +59,6 @@ export const messages = pgTable(
 
     priority: messagePriorityEnum("priority").notNull().default("normal"),
 
-    displayDuration: integer("display_duration").notNull().default(30), // 15-30 seconds
-
     isActive: boolean("is_active").notNull().default(true),
 
     createdAt: timestamp("created_at").defaultNow().notNull(),

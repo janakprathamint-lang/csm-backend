@@ -18,7 +18,6 @@ export const sendBroadcastMessage = async (
     message: string;
     targetRoles: string[];
     priority?: "low" | "normal" | "high" | "urgent";
-    displayDuration?: number;
   },
   senderId: number,
   senderName: string
@@ -40,7 +39,6 @@ export const sendBroadcastMessage = async (
     title: message.title,
     message: message.message,
     priority: message.priority,
-    displayDuration: message.displayDuration,
     createdAt: message.createdAt.toISOString(),
     sender,
     targetRoles: message.targetRoles || [],

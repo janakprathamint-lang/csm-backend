@@ -41,7 +41,7 @@ export const createBroadcastMessageController = async (
     }
 
     const body = req.body || {};
-    const { title, message, targetRoles, priority, displayDuration } =
+    const { title, message, targetRoles, priority } =
       body;
 
     // Enhanced validation with detailed error messages
@@ -90,7 +90,6 @@ export const createBroadcastMessageController = async (
         message,
         targetRoles,
         priority,
-        displayDuration,
       },
       authReq.user.id,
       sender.fullName
@@ -105,7 +104,6 @@ export const createBroadcastMessageController = async (
         message: createdMessage.message,
         targetRoles: createdMessage.targetRoles,
         priority: createdMessage.priority,
-        displayDuration: createdMessage.displayDuration,
         createdAt: createdMessage.createdAt.toISOString(),
         sender: {
           id: sender.id,
@@ -204,7 +202,6 @@ export const getAllMessagesController = async (
           targetRoles: msg.targetRoles,
           targetUserIds: msg.targetUserIds,
           priority: msg.priority,
-          displayDuration: msg.displayDuration,
           isActive: msg.isActive,
           createdAt: msg.createdAt.toISOString(),
           updatedAt: msg.updatedAt.toISOString(),
@@ -274,7 +271,6 @@ export const getInboxMessagesController = async (
           title: msg.title,
           message: msg.message,
           priority: msg.priority,
-          displayDuration: msg.displayDuration,
           createdAt: msg.createdAt.toISOString(),
           isAcknowledged: msg.isAcknowledged,
           acknowledgedAt: msg.acknowledgedAt?.toISOString() || null,
@@ -345,7 +341,6 @@ export const getUnacknowledgedMessagesController = async (
           title: msg.title,
           message: msg.message,
           priority: msg.priority,
-          displayDuration: msg.displayDuration,
           createdAt: msg.createdAt.toISOString(),
           sender: {
             id: sender?.id || msg.senderId,
