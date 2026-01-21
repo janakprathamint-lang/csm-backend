@@ -1,11 +1,12 @@
 import { Router } from "express";
-import { registerUser,login,logout,refreshAccessToken,getAllUsersController,
+import { registerUser,login,logout,refreshAccessToken,getCurrentUser,getAllUsersController,
     updateUserController,
     deleteUserController,
     getManagersDropdown,
     getAllCounsellorsAdminController,
     getCounsellorsByManagerController,
-    getManagersWithCounsellorsController
+    getManagersWithCounsellorsController,
+    changePasswordController
 } from "../controllers/user.controller";
 import { requireAuth,requireRole } from "../middlewares/auth.middleware";
 import { preventDuplicateRequests } from "../middlewares/requestDeduplication.middleware";
@@ -16,6 +17,8 @@ const router = Router();
 router.post("/login", login);
 router.post("/refresh", refreshAccessToken);
 router.post("/logout", requireAuth,logout);
+router.get("/me", requireAuth, getCurrentUser);
+router.put("/change-password", requireAuth, preventDuplicateRequests, changePasswordController);
 
 // 🔐 ADMIN ONLY: Get all users
 router.post("/register",requireAuth,requireRole("admin"), preventDuplicateRequests, registerUser);

@@ -96,7 +96,9 @@ export const saveClientProductPaymentController = async (
       }
     }
 
+    console.log("req.body client product payment", req.body);
     const result = await saveClientProductPayment(req.body);
+
     const clientId = result.record.clientId;
 
     // Get counsellorId from clientId

@@ -36,6 +36,7 @@ export const saveClientPaymentController = async (
       }
     }
 
+    console.log("req.body client payment", req.body);
     const result = await saveClientPayment(req.body);
     const clientId = result.payment.clientId;
 

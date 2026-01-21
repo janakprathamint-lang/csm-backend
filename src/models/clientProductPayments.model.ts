@@ -39,25 +39,10 @@ const fetchEntities = async <T extends { id: number }>(
           : inArray(table.id, ids)
       );
 
-    if (entityType === "newSell_id") {
-      console.log(`[DEBUG] fetchEntities for newSell:`, {
-        ids,
-        recordsCount: records.length,
-        recordIds: records.map((r: T) => r.id)
-      });
-    }
-
     const map = new Map(records.map((r: T) => {
       const key = Number(r.id);
-      if (entityType === "newSell_id") {
-        console.log(`[DEBUG] Mapping newSell record: id=${r.id} (${typeof r.id}) -> key=${key} (${typeof key})`);
-      }
       return [key, r];
     }));
-
-    if (entityType === "newSell_id") {
-      console.log(`[DEBUG] fetchEntities newSell map created with keys:`, Array.from(map.keys()));
-    }
 
     return map;
   } catch (error) {
@@ -510,9 +495,10 @@ const createEntityRecord = async (
 export const saveClientProductPayment = async (
   data: SaveClientProductPaymentInput
 ) => {
+  // Normalize IDs - convert strings to numbers if needed
+  const productPaymentId = data.productPaymentId ? Number(data.productPaymentId) : undefined;
+  const clientId = Number(data.clientId);
   const {
-    productPaymentId,
-    clientId,
     productName,
     amount,
     paymentDate,
@@ -521,8 +507,12 @@ export const saveClientProductPayment = async (
     entityData,
   } = data;
 
-  if (!clientId || !productName) {
-    throw new Error("clientId and productName are required");
+  if (!clientId || !Number.isFinite(clientId) || clientId <= 0) {
+    throw new Error("Valid clientId is required");
+  }
+
+  if (!productName) {
+    throw new Error("productName is required");
   }
 
   const entityType = productToEntityTypeMap[productName];
@@ -548,13 +538,15 @@ export const saveClientProductPayment = async (
   // ---------------------------
   // UPDATE
   // ---------------------------
-  if (productPaymentId) {
+  if (productPaymentId && Number.isFinite(productPaymentId) && productPaymentId > 0) {
     const [existing] = await db
       .select()
       .from(clientProductPayments)
       .where(eq(clientProductPayments.productPaymentId, productPaymentId));
 
-    if (!existing) throw new Error("Record not found");
+    if (!existing) {
+      throw new Error("Product payment record not found");
+    }
 
     // update entity table only if exists
     if (entityData && entityType !== "master_only") {

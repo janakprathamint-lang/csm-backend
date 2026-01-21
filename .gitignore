@@ -62,3 +62,9 @@ coverage/
 # =========================
 .tmp/
 temp/
+
+# Ignore all Markdown files
+*.md
+
+# Ignore all ZIP files
+*.zip

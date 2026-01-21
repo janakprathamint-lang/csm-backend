@@ -25,9 +25,19 @@ export interface DashboardStats {
     change: number;
     changeType: "increase" | "decrease" | "no-change";
   };
+  coreServiceCount: {
+    count: number;
+    change: number;
+    changeType: "increase" | "decrease" | "no-change";
+  };
+  coreProductCount: {
+    count: number;
+    change: number;
+    changeType: "increase" | "decrease" | "no-change";
+  };
   totalRevenue: {
-    totalCorePayment: string;  // From clientPayments table
-    totalProductPayment: string; // From clientProductPayments table
+    totalCorePayment: string;  // Core Service Revenue - From clientPayments table
+    totalProductPayment: string; // Core Product Revenue - From clientProductPayments table
     total: string;
     change: number;
     changeType: "increase" | "decrease" | "no-change";
@@ -152,6 +162,166 @@ const getTotalClientsPrevious = async (
     );
 
   return result?.count || 0;
+};
+
+/* ==============================
+   CORE SERVICE COUNT
+============================== */
+const getCoreServiceCount = async (dateRange: DateRange): Promise<number> => {
+  const startDateStr = dateRange.start.toISOString().split("T")[0];
+  const endDateStr = dateRange.end.toISOString().split("T")[0];
+  const startTimestamp = dateRange.start.toISOString();
+  const endTimestamp = dateRange.end.toISOString();
+
+  const [result] = await db
+    .select({ count: count() })
+    .from(clientPayments)
+    .where(
+      sql`(
+        ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+        AND (
+          (${clientPayments.paymentDate} IS NOT NULL
+            AND ${clientPayments.paymentDate} >= ${startDateStr}
+            AND ${clientPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientPayments.paymentDate} IS NULL
+            AND ${clientPayments.createdAt} >= ${startTimestamp}
+            AND ${clientPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    );
+
+  return result?.count || 0;
+};
+
+const getCoreServiceCountPrevious = async (
+  dateRange: DateRange
+): Promise<number> => {
+  const prevStartDateStr = dateRange.previousStart.toISOString().split("T")[0];
+  const prevEndDateStr = dateRange.previousEnd.toISOString().split("T")[0];
+  const prevStartTimestamp = dateRange.previousStart.toISOString();
+  const prevEndTimestamp = dateRange.previousEnd.toISOString();
+
+  const [result] = await db
+    .select({ count: count() })
+    .from(clientPayments)
+    .where(
+      sql`(
+        ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+        AND (
+          (${clientPayments.paymentDate} IS NOT NULL
+            AND ${clientPayments.paymentDate} >= ${prevStartDateStr}
+            AND ${clientPayments.paymentDate} <= ${prevEndDateStr})
+          OR
+          (${clientPayments.paymentDate} IS NULL
+            AND ${clientPayments.createdAt} >= ${prevStartTimestamp}
+            AND ${clientPayments.createdAt} <= ${prevEndTimestamp})
+        )
+      )`
+    );
+
+  return result?.count || 0;
+};
+
+/* ==============================
+   CORE PRODUCT COUNT
+============================== */
+const getCoreProductCount = async (dateRange: DateRange): Promise<number> => {
+  const startDateStr = dateRange.start.toISOString().split("T")[0];
+  const endDateStr = dateRange.end.toISOString().split("T")[0];
+  const startTimestamp = dateRange.start.toISOString();
+  const endTimestamp = dateRange.end.toISOString();
+
+  // Count product payments with amount (master_only products)
+  const [productPaymentsWithAmount] = await db
+    .select({ count: count() })
+    .from(clientProductPayments)
+    .where(
+      sql`(
+        ${clientProductPayments.amount} IS NOT NULL
+        AND (
+          (${clientProductPayments.paymentDate} IS NOT NULL
+            AND ${clientProductPayments.paymentDate} >= ${startDateStr}
+            AND ${clientProductPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientProductPayments.paymentDate} IS NULL
+            AND ${clientProductPayments.createdAt} >= ${startTimestamp}
+            AND ${clientProductPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    );
+
+  // Count entity-based product payments (amount is NULL, stored in entity tables)
+  const [productPaymentsWithEntity] = await db
+    .select({ count: count() })
+    .from(clientProductPayments)
+    .where(
+      sql`(
+        ${clientProductPayments.amount} IS NULL
+        AND ${clientProductPayments.entityId} IS NOT NULL
+        AND (
+          (${clientProductPayments.paymentDate} IS NOT NULL
+            AND ${clientProductPayments.paymentDate} >= ${startDateStr}
+            AND ${clientProductPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientProductPayments.paymentDate} IS NULL
+            AND ${clientProductPayments.createdAt} >= ${startTimestamp}
+            AND ${clientProductPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    );
+
+  return (productPaymentsWithAmount?.count || 0) + (productPaymentsWithEntity?.count || 0);
+};
+
+const getCoreProductCountPrevious = async (
+  dateRange: DateRange
+): Promise<number> => {
+  const prevStartDateStr = dateRange.previousStart.toISOString().split("T")[0];
+  const prevEndDateStr = dateRange.previousEnd.toISOString().split("T")[0];
+  const prevStartTimestamp = dateRange.previousStart.toISOString();
+  const prevEndTimestamp = dateRange.previousEnd.toISOString();
+
+  // Count product payments with amount - previous period
+  const [productPaymentsWithAmount] = await db
+    .select({ count: count() })
+    .from(clientProductPayments)
+    .where(
+      sql`(
+        ${clientProductPayments.amount} IS NOT NULL
+        AND (
+          (${clientProductPayments.paymentDate} IS NOT NULL
+            AND ${clientProductPayments.paymentDate} >= ${prevStartDateStr}
+            AND ${clientProductPayments.paymentDate} <= ${prevEndDateStr})
+          OR
+          (${clientProductPayments.paymentDate} IS NULL
+            AND ${clientProductPayments.createdAt} >= ${prevStartTimestamp}
+            AND ${clientProductPayments.createdAt} <= ${prevEndTimestamp})
+        )
+      )`
+    );
+
+  // Count entity-based product payments - previous period
+  const [productPaymentsWithEntity] = await db
+    .select({ count: count() })
+    .from(clientProductPayments)
+    .where(
+      sql`(
+        ${clientProductPayments.amount} IS NULL
+        AND ${clientProductPayments.entityId} IS NOT NULL
+        AND (
+          (${clientProductPayments.paymentDate} IS NOT NULL
+            AND ${clientProductPayments.paymentDate} >= ${prevStartDateStr}
+            AND ${clientProductPayments.paymentDate} <= ${prevEndDateStr})
+          OR
+          (${clientProductPayments.paymentDate} IS NULL
+            AND ${clientProductPayments.createdAt} >= ${prevStartTimestamp}
+            AND ${clientProductPayments.createdAt} <= ${prevEndTimestamp})
+        )
+      )`
+    );
+
+  return (productPaymentsWithAmount?.count || 0) + (productPaymentsWithEntity?.count || 0);
 };
 
 /* ==============================
@@ -453,15 +623,20 @@ const getTotalRevenuePrevious = async (
    PENDING AMOUNT (OUTSTANDING)
 ============================== */
 const getPendingAmount = async (dateRange: DateRange): Promise<{ pendingAmount: string; breakdown: { initial: string; beforeVisa: string; afterVisa: string; submittedVisa: string } }> => {
-  // Get ALL non-archived clients (not filtered by date range)
-  // Pending amount should show for all clients regardless of creation date
+  // Get clients filtered by date range (only clients created within the period)
   const clients = await db
     .select({
       clientId: clientInformation.clientId,
       saleTypeId: clientInformation.saleTypeId,
     })
     .from(clientInformation)
-    .where(eq(clientInformation.archived, false));
+    .where(
+      and(
+        eq(clientInformation.archived, false),
+        gte(clientInformation.createdAt, dateRange.start),
+        lte(clientInformation.createdAt, dateRange.end)
+      )
+    );
 
   if (clients.length === 0) {
     return {
@@ -577,15 +752,15 @@ const getPendingAmount = async (dateRange: DateRange): Promise<{ pendingAmount: 
   });
 
   // Debug logging to trace the calculation
-  console.log("=== PENDING AMOUNT CALCULATION DEBUG ===");
-  console.log("Total Clients:", clients.length);
-  console.log("Clients with payments:", clientExpectedMap.size);
-  console.log("Clients without payments:", clientsWithoutPayments.length);
-  console.log("Total Expected (from clientPayments.totalPayment):", totalExpected);
-  console.log("Total Paid (INITIAL + BEFORE_VISA + AFTER_VISA):", totalPaid);
-  console.log("Breakdown:", breakdown);
-  console.log("Calculated Pending Amount:", totalExpected - totalPaid);
-  console.log("========================================");
+  // console.log("=== PENDING AMOUNT CALCULATION DEBUG ===");
+  // console.log("Total Clients:", clients.length);
+  // console.log("Clients with payments:", clientExpectedMap.size);
+  // console.log("Clients without payments:", clientsWithoutPayments.length);
+  // console.log("Total Expected (from clientPayments.totalPayment):", totalExpected);
+  // console.log("Total Paid (INITIAL + BEFORE_VISA + AFTER_VISA):", totalPaid);
+  // console.log("Breakdown:", breakdown);
+  // console.log("Calculated Pending Amount:", totalExpected - totalPaid);
+  // console.log("========================================");
 
   // Calculate pending amount: totalExpected - (initial + beforeVisa + afterVisa)
   const pendingAmount = totalExpected - totalPaid;
@@ -847,6 +1022,10 @@ export const getDashboardStats = async (
   const [
     totalClients,
     totalClientsPrevious,
+    coreServiceCount,
+    coreServiceCountPrevious,
+    coreProductCount,
+    coreProductCountPrevious,
     totalRevenue,
     totalRevenuePrevious,
     pendingAmount,
@@ -855,6 +1034,10 @@ export const getDashboardStats = async (
   ] = await Promise.all([
     getTotalClients(dateRange),
     getTotalClientsPrevious(dateRange),
+    getCoreServiceCount(dateRange),
+    getCoreServiceCountPrevious(dateRange),
+    getCoreProductCount(dateRange),
+    getCoreProductCountPrevious(dateRange),
     getTotalRevenue(dateRange),
     getTotalRevenuePrevious(dateRange),
     getPendingAmount(dateRange),
@@ -867,6 +1050,14 @@ export const getDashboardStats = async (
     totalClients,
     totalClientsPrevious
   );
+  const coreServiceChange = calculatePercentageChange(
+    coreServiceCount,
+    coreServiceCountPrevious
+  );
+  const coreProductChange = calculatePercentageChange(
+    coreProductCount,
+    coreProductCountPrevious
+  );
   const revenueChange = calculatePercentageChange(
     parseFloat(totalRevenue.total),
     parseFloat(totalRevenuePrevious.total)
@@ -877,6 +1068,16 @@ export const getDashboardStats = async (
       count: totalClients,
       change: clientsChange.change,
       changeType: clientsChange.changeType,
+    },
+    coreServiceCount: {
+      count: coreServiceCount,
+      change: coreServiceChange.change,
+      changeType: coreServiceChange.changeType,
+    },
+    coreProductCount: {
+      count: coreProductCount,
+      change: coreProductChange.change,
+      changeType: coreProductChange.changeType,
     },
     totalRevenue: {
       totalCorePayment: totalRevenue.totalCorePayment,

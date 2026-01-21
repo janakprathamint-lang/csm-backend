@@ -66,9 +66,12 @@ export const createUser = async (
 
   const passwordHash = await bcrypt.hash(data.password, 10);
 
+  // Normalize empId: convert empty strings to null to avoid unique constraint violations
+  const normalizedEmpId = data.empId && data.empId.trim() !== "" ? data.empId.trim() : null;
+
   // optional employee id handling (support new PINT format and legacy EMP-XXXX)
-  if (data.empId) {
-    const empIdValue = data.empId.toUpperCase();
+  if (normalizedEmpId) {
+    const empIdValue = normalizedEmpId.toUpperCase();
     if (!/^(PINT\d{5})$/.test(empIdValue)) {
       throw new Error("empId must match format 'PINT12345' or 'EMP-XXXX' (e.g., PINT41922)");
     }
@@ -85,6 +88,9 @@ export const createUser = async (
 
     // normalize to uppercase
     data.empId = empIdValue;
+  } else {
+    // Set to null if empty/whitespace
+    data.empId = null;
   }
 
   let finalRole: Role = "counsellor";
@@ -106,18 +112,31 @@ export const createUser = async (
     throw new Error("Only managers can be supervisors");
   }
 
+  // Normalize phone numbers: convert empty strings to null to avoid unique constraint violations
+  const officePhone = data.officePhone && data.officePhone.trim() !== "" ? data.officePhone.trim() : null;
+  const personalPhone = data.personalPhone && data.personalPhone.trim() !== "" ? data.personalPhone.trim() : null;
+  const designation = data.designation && data.designation.trim() !== "" ? data.designation.trim() : null;
+
+  // Validate phone number length (max 10 characters)
+  if (officePhone && officePhone.length > 10) {
+    throw new Error("Office phone must be 10 characters or less");
+  }
+  if (personalPhone && personalPhone.length > 10) {
+    throw new Error("Personal phone must be 10 characters or less");
+  }
+
   const [user] = await db
     .insert(users)
     .values({
       fullName: data.fullName,
       email: email,
-      emp_id: data.empId ?? null,
+      emp_id: data.empId || null, // Use || to convert empty strings to null
       passwordHash,
       role: finalRole,
       managerId: finalRole === "counsellor" ? data.managerId : null,
-      officePhone: data.officePhone,
-      personalPhone: data.personalPhone,
-      designation: data.designation,
+      officePhone,
+      personalPhone,
+      designation,
       isSupervisor: finalRole === "manager" ? (data.isSupervisor ?? false) : false,
     })
     .returning({
@@ -180,7 +199,9 @@ export const updateUserByAdmin = async (
   }
 
   if (data.empId !== undefined) {
-    const empIdValue = data.empId ? data.empId.toUpperCase() : null;
+    // Normalize empId: convert empty strings/whitespace to null to avoid unique constraint violations
+    const normalizedEmpId = data.empId && data.empId.trim() !== "" ? data.empId.trim() : null;
+    const empIdValue = normalizedEmpId ? normalizedEmpId.toUpperCase() : null;
 
     if (empIdValue && !/^(EMP-\d{4}|PINT\d{5})$/.test(empIdValue)) {
       throw new Error("empId must match format 'PINT12345' or 'EMP-XXXX' (e.g., PINT41922 or EMP-0025)");
@@ -265,9 +286,7 @@ export const updateUserByAdmin = async (
         role: finalRole,
         emp_id:
           data.empId !== undefined
-            ? data.empId
-              ? data.empId.toUpperCase()
-              : null
+            ? (data.empId && data.empId.trim() !== "" ? data.empId.trim().toUpperCase() : null)
             : existingUser.empId,
         managerId: finalRole === "counsellor" ? finalManagerId : null,
         officePhone: data.officePhone,
@@ -497,4 +516,67 @@ export const getManagersWithCounsellors = async () => {
   );
 
   return managersWithCounsellors;
+};
+
+/* ================================
+   CHANGE PASSWORD (USER)
+================================ */
+
+export const changePassword = async (
+  userId: number,
+  oldPassword: string,
+  newPassword: string
+) => {
+  // Validate inputs
+  if (!oldPassword || !newPassword) {
+    throw new Error("Old password and new password are required");
+  }
+
+  if (newPassword.length < 8) {
+    throw new Error("New password must be at least 8 characters");
+  }
+
+  // Get current user with password hash
+  const [user] = await db
+    .select({
+      id: users.id,
+      passwordHash: users.passwordHash,
+      email: users.email,
+    })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  // Verify old password matches
+  const isOldPasswordValid = await bcrypt.compare(oldPassword, user.passwordHash);
+  if (!isOldPasswordValid) {
+    throw new Error("Current password is incorrect");
+  }
+
+  // Check if new password is different from old password
+  const isSamePassword = await bcrypt.compare(newPassword, user.passwordHash);
+  if (isSamePassword) {
+    throw new Error("New password must be different from current password");
+  }
+
+  // Hash new password
+  const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+  // Update password in database
+  await db
+    .update(users)
+    .set({
+      passwordHash: newPasswordHash,
+    })
+    .where(eq(users.id, userId));
+
+  return {
+    message: "Password changed successfully",
+    userId: user.id,
+    email: user.email,
+  };
 };

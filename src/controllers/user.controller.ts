@@ -7,7 +7,8 @@ import {
   getAllManagers,
   getAllCounsellors,
   getCounsellorsByManagerId,
-  getManagersWithCounsellors
+  getManagersWithCounsellors,
+  changePassword
 } from "../models/user.model";
 import bcrypt from "bcrypt";
 import { db } from "../config/databaseConnection";
@@ -165,18 +166,21 @@ export const login = async (req: Request, res: Response) => {
 
   // set cookies (access short lived, refresh long lived)
   const isProduction = process.env.NODE_ENV === "production";
-  res.cookie("accessToken", accessToken, {
+  const cookieOptions = {
     httpOnly: true,
     secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    maxAge: 15 * 60 * 1000,
+    sameSite: (isProduction ? "none" : "lax") as "none" | "lax" | "strict",
+    path: "/",
+  };
+
+  res.cookie("accessToken", accessToken, {
+    ...cookieOptions,
+    maxAge: 15 * 60 * 1000, // 15 minutes
   });
 
   res.cookie("refreshToken", refreshToken, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    ...cookieOptions,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
 
   if (process.env.NODE_ENV !== "production") {
@@ -228,15 +232,29 @@ export const login = async (req: Request, res: Response) => {
 
 export const refreshAccessToken = async (req: Request, res: Response) => {
   // Try to get refresh token from cookie, body, or Authorization header (for Postman/testing)
-  const refreshToken =
-    req.cookies.refreshToken ||
-    req.body.refreshToken ||
-    (req.headers.authorization?.startsWith("Bearer ")
-      ? req.headers.authorization.split(" ")[1]
-      : null);
+  const refreshTokenFromCookie = req.cookies?.refreshToken;
+  const refreshTokenFromBody = req.body?.refreshToken;
+  const refreshTokenFromHeader = req.headers.authorization?.startsWith("Bearer ")
+    ? req.headers.authorization.split(" ")[1]
+    : null;
+
+  const refreshToken = refreshTokenFromCookie || refreshTokenFromBody || refreshTokenFromHeader;
+
+  // Debug logging in development
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[REFRESH] Token sources:", {
+      hasCookie: !!refreshTokenFromCookie,
+      hasBody: !!refreshTokenFromBody,
+      hasHeader: !!refreshTokenFromHeader,
+      cookies: Object.keys(req.cookies || {}),
+    });
+  }
 
   if (!refreshToken) {
-    return res.status(401).json({ message: "Refresh token missing" });
+    return res.status(401).json({
+      message: "Refresh token missing",
+      hint: "Please provide refresh token via cookie, request body, or Authorization header"
+    });
   }
 
   // Trim token to avoid whitespace issues
@@ -347,13 +365,28 @@ export const refreshAccessToken = async (req: Request, res: Response) => {
     httpOnly: true,
     secure: isProduction,
     sameSite: isProduction ? "none" : "lax",
-    maxAge: 15 * 60 * 1000,
+    maxAge: 15 * 60 * 1000, // 15 minutes
+    path: "/",
   });
 
+  // Also update refresh token cookie expiration (extend it)
+  res.cookie("refreshToken", trimmedToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "none" : "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    path: "/",
+  });
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`✅ Token refreshed for user ${decoded.userId} (session: ${tokenByHash.id})`);
+  }
+
   res.json({
-    message: "Token refreshed",
+    message: "Token refreshed successfully",
     accessToken: newAccessToken,
     role: dbUser.role,
+    expiresIn: "15m",
   });
 };
 
@@ -396,9 +429,68 @@ export const logout = async (req: Request, res: Response) => {
     }
   }
 
-  res.clearCookie("accessToken");
-  res.clearCookie("refreshToken");
+  // Clear cookies with same options as when they were set
+  const isProduction = process.env.NODE_ENV === "production";
+  const clearCookieOptions = {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: (isProduction ? "none" : "lax") as "none" | "lax" | "strict",
+    path: "/",
+  };
+
+  res.clearCookie("accessToken", clearCookieOptions);
+  res.clearCookie("refreshToken", clearCookieOptions);
   res.json({ message: "Logged out successfully" });
+};
+
+/* ================================
+   GET CURRENT USER PROFILE
+================================ */
+
+export const getCurrentUser = async (req: Request, res: Response) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+    const userId = authReq.user.id;
+
+    // Fetch user from database
+    const [user] = await db
+      .select({
+        id: users.id,
+        fullName: users.fullName,
+        email: users.email,
+        empId: users.emp_id,
+        officePhone: users.officePhone,
+        personalPhone: users.personalPhone,
+        designation: users.designation,
+        role: users.role,
+        managerId: users.managerId,
+        isSupervisor: users.isSupervisor,
+      })
+      .from(users)
+      .where(eq(users.id, userId));
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Return same format as login response
+    res.json({
+      message: "User profile retrieved successfully",
+      userId: user.id,
+      fullname: user.fullName,
+      email: user.email,
+      empid: user.empId,
+      officePhone: user.officePhone,
+      personalPhone: user.personalPhone,
+      designation: user.designation,
+      role: user.role,
+      managerId: user.managerId,
+      isSupervisor: user.isSupervisor,
+    });
+  } catch (error: any) {
+    console.error("Error fetching current user:", error);
+    res.status(500).json({ message: "Failed to fetch user profile" });
+  }
 };
 
 /* ================================
@@ -571,6 +663,66 @@ export const getManagersWithCounsellorsController = async (_req: Request, res: R
     res.status(400).json({
       success: false,
       message: error?.message ?? String(error)
+    });
+  }
+};
+
+/* ================================
+   CHANGE PASSWORD (USER)
+================================ */
+
+export const changePasswordController = async (req: Request, res: Response) => {
+  try {
+    const authReq = req as AuthenticatedRequest;
+
+    if (!authReq.user || !authReq.user.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const userId = authReq.user.id;
+    const { oldPassword, newPassword } = req.body;
+
+    // Validate input
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "Old password and new password are required",
+      });
+    }
+
+    // Change password
+    const result = await changePassword(userId, oldPassword, newPassword);
+
+    // Log activity
+    try {
+      await logActivity(req, {
+        entityType: "user",
+        entityId: userId,
+        clientId: null,
+        action: "UPDATE",
+        description: `User changed password: ${result.email}`,
+        performedBy: userId,
+      });
+    } catch (activityError) {
+      // Don't fail the request if activity log fails
+      console.error("Activity log error in changePassword:", activityError);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: result.message,
+      data: {
+        userId: result.userId,
+        email: result.email,
+      },
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error?.message || "Failed to change password",
     });
   }
 };

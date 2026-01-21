@@ -1,8 +1,9 @@
 import { Request, Response } from "express";
 import { saveClient, getClientFullDetailsById,getClientsByCounsellor, getAllCounsellorIds, getAllClientsForAdmin, getAllClientsForManager, getArchivedClientsByCounsellor, getAllArchivedClientsForAdmin, getAllArchivedClientsForManager, updateClientArchiveStatus } from "../models/client.model";
 import { getProductPaymentsByClientId } from "../models/clientProductPayments.model";
-import { emitToCounsellor, emitToAdmin, emitDashboardUpdate } from "../config/socket";
+import { emitToCounsellor, emitToAdmin, emitDashboardUpdate, emitToCounsellors } from "../config/socket";
 import { getDashboardStats } from "../models/dashboard.model";
+import { getLeaderboard, getMonthlyEnrollmentGoal } from "../models/leaderboard.model";
 import { logActivity } from "../services/activityLog.service";
 import { db } from "../config/databaseConnection";
 import { clientInformation } from "../schemas/clientInformation.schema";
@@ -63,6 +64,7 @@ export const saveClientController = async (req: Request, res: Response) => {
       }
     }
 
+    console.log("req.body client", req.body);
     const client = await saveClient(req.body, req.user.id);
 
     // Log activity
@@ -139,6 +141,46 @@ export const saveClientController = async (req: Request, res: Response) => {
         });
       } catch (dashboardError) {
         console.error("Dashboard update emit error:", dashboardError);
+      }
+
+      // Emit leaderboard and enrollment goal updates for current month
+      try {
+        const currentDate = new Date();
+        const currentMonth = currentDate.getMonth() + 1;
+        const currentYear = currentDate.getFullYear();
+
+        // Get updated leaderboard data
+        const leaderboardData = await getLeaderboard(currentMonth, currentYear);
+
+        // Emit leaderboard update to all counselors (for Image 1)
+        emitToCounsellors("leaderboard:updated", {
+          month: currentMonth,
+          year: currentYear,
+          leaderboard: leaderboardData,
+        });
+
+        // Emit enrollment goal update for the counselor who created/updated the client
+        const enrollmentGoalData = await getMonthlyEnrollmentGoal(
+          counsellorId,
+          currentMonth,
+          currentYear
+        );
+        emitToCounsellor(counsellorId, "enrollment-goal:updated", {
+          month: currentMonth,
+          year: currentYear,
+          data: enrollmentGoalData,
+        });
+
+        // Also emit to admin and manager rooms for enrollment goal updates
+        // Admin and managers can view any counselor's enrollment goal
+        emitToAdmin("enrollment-goal:updated", {
+          month: currentMonth,
+          year: currentYear,
+          counsellorId: counsellorId,
+          data: enrollmentGoalData,
+        });
+      } catch (leaderboardError) {
+        console.error("Leaderboard/enrollment goal update emit error:", leaderboardError);
       }
     } catch (wsError) {
       // Don't fail the request if WebSocket fails

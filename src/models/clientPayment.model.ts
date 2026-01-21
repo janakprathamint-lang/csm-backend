@@ -22,9 +22,10 @@ interface SaveClientPaymentInput {
 export const saveClientPayment = async (
   data: SaveClientPaymentInput
 ) => {
+  // Normalize IDs - convert strings to numbers if needed
+  const paymentId = data.paymentId ? Number(data.paymentId) : undefined;
+  const clientId = Number(data.clientId);
   const {
-    paymentId,
-    clientId,
     totalPayment,
     stage,
     amount,
@@ -33,8 +34,12 @@ export const saveClientPayment = async (
     remarks,
   } = data;
 
-  if (!clientId || !stage || !amount || !totalPayment) {
-    throw new Error("Required payment fields missing");
+  if (!clientId || !Number.isFinite(clientId) || clientId <= 0) {
+    throw new Error("Valid clientId is required");
+  }
+
+  if (!stage || !amount || !totalPayment) {
+    throw new Error("Required payment fields missing: stage, amount, totalPayment");
   }
 
   // Provide defaults for NOT NULL fields if not provided
@@ -45,7 +50,7 @@ export const saveClientPayment = async (
   /* =========================
      UPDATE PAYMENT
   ========================= */
-  if (paymentId) {
+  if (paymentId && Number.isFinite(paymentId) && paymentId > 0) {
     const existingPayment = await db
       .select({ id: clientPayments.paymentId, invoiceNo: clientPayments.invoiceNo })
       .from(clientPayments)
@@ -71,19 +76,34 @@ export const saveClientPayment = async (
       }
     }
 
-    const [updatedPayment] = await db
-      .update(clientPayments)
-      .set({
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[UPDATE PAYMENT] Updating payment ${paymentId} with:`, {
         clientId,
         totalPayment,
         stage,
         amount,
         paymentDate: finalPaymentDate,
         invoiceNo: finalInvoiceNo,
-        remarks: remarks ?? null,
+      });
+    }
+
+    const [updatedPayment] = await db
+      .update(clientPayments)
+      .set({
+        clientId,
+        totalPayment: String(totalPayment),
+        stage,
+        amount: String(amount),
+        paymentDate: finalPaymentDate,
+        invoiceNo: finalInvoiceNo,
+        remarks: remarks ? String(remarks).trim() : null,
       })
       .where(eq(clientPayments.paymentId, paymentId))
       .returning();
+
+    if (!updatedPayment) {
+      throw new Error("Failed to update payment");
+    }
 
     return {
       action: "UPDATED",
@@ -109,12 +129,12 @@ export const saveClientPayment = async (
     .insert(clientPayments)
     .values({
       clientId,
-      totalPayment,
+      totalPayment: String(totalPayment),
       stage,
-      amount,
+      amount: String(amount),
       paymentDate: finalPaymentDate,
       invoiceNo: finalInvoiceNo,
-      remarks: remarks ?? null,
+      remarks: remarks ? String(remarks).trim() : null,
     })
     .returning();
 

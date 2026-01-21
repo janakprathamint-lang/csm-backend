@@ -657,3 +657,97 @@ export const updateTarget = async (targetId: number, target: number) => {
 
   return updated;
 };
+
+/* ==============================
+   GET MONTHLY ENROLLMENT GOAL
+   Returns enrollment goal data for a specific counsellor (Image 2)
+   Shows: target, achieved, remaining, percentage completed
+============================== */
+export const getMonthlyEnrollmentGoal = async (
+  counsellorId: number,
+  month?: number,
+  year?: number
+) => {
+  // Default to current month/year if not provided
+  const currentDate = new Date();
+  const targetMonth = month || currentDate.getMonth() + 1;
+  const targetYear = year || currentDate.getFullYear();
+
+  // Validate month and year
+  if (targetMonth < 1 || targetMonth > 12) {
+    throw new Error("Invalid month. Must be between 1 and 12");
+  }
+  if (targetYear < 2000 || targetYear > 3000) {
+    throw new Error("Invalid year");
+  }
+
+  // Verify counsellor exists
+  const [counsellor] = await db
+    .select({
+      id: users.id,
+      fullName: users.fullName,
+      role: users.role,
+    })
+    .from(users)
+    .where(eq(users.id, counsellorId))
+    .limit(1);
+
+  if (!counsellor) {
+    throw new Error("Counsellor not found");
+  }
+
+  if (counsellor.role !== "counsellor") {
+    throw new Error("User is not a counsellor");
+  }
+
+  // Calculate date range for the month
+  const startDate = new Date(targetYear, targetMonth - 1, 1);
+  const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
+  const startDateStr = startDate.toISOString().split("T")[0];
+  const endDateStr = endDate.toISOString().split("T")[0];
+
+  // Count enrollments (achieved) for this month/year
+  const [enrollmentResult] = await db
+    .select({
+      count: count(clientInformation.clientId),
+    })
+    .from(clientInformation)
+    .where(
+      and(
+        eq(clientInformation.counsellorId, counsellorId),
+        eq(clientInformation.archived, false),
+        gte(clientInformation.enrollmentDate, startDateStr),
+        lte(clientInformation.enrollmentDate, endDateStr)
+      )
+    );
+
+  const achieved = enrollmentResult?.count || 0;
+
+  // Get target from leaderboard table (if exists)
+  const [targetRecord] = await db
+    .select()
+    .from(leaderBoard)
+    .where(
+      and(
+        eq(leaderBoard.counsellor_id, counsellorId),
+        sql`EXTRACT(YEAR FROM ${leaderBoard.createdAt}) = ${targetYear}`,
+        sql`EXTRACT(MONTH FROM ${leaderBoard.createdAt}) = ${targetMonth}`
+      )
+    )
+    .limit(1);
+
+  const target = targetRecord?.target || 0;
+  const remaining = Math.max(0, target - achieved);
+  const percentageCompleted = target > 0 ? Math.round((achieved / target) * 100) : 0;
+
+  return {
+    counsellorId: counsellor.id,
+    fullName: counsellor.fullName,
+    target,
+    achieved,
+    remaining,
+    percentageCompleted,
+    month: targetMonth,
+    year: targetYear,
+  };
+};

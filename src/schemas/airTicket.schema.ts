@@ -19,7 +19,7 @@ export const airTicket = pgTable(
 
     amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
 
-    airTicketNumber: varchar("air_ticket_number", { length: 50 }).unique().notNull(),
+    airTicketNumber: varchar("air_ticket_number", { length: 50 }).unique(),
 
     ticketDate: date("date").notNull(),
 

@@ -85,11 +85,11 @@ export const clientPayments = pgTable(
 
     stage: stageEnum("stage").notNull(),
 
-    amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+    amount: decimal("amount", { precision: 12, scale: 2 }),
 
     paymentDate: date("payment_date").notNull(),
 
-    invoiceNo: varchar("invoice_no", { length: 50 }).unique().notNull(),
+    invoiceNo: varchar("invoice_no", { length: 50 }).unique(),
 
     remarks: text("remarks"),
 

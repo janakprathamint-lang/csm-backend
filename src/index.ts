@@ -11,6 +11,7 @@ import clientProductPaymentRoutes from "./routes/clientProductPayment.routes";
 import dashboardRoutes from "./routes/dashboard.routes";
 import activityLogRoutes from "./routes/activityLog.routes";
 import leaderboardRoutes from "./routes/leaderboard.routes";
+import messageRoutes from "./routes/message.routes";
 import { healthController } from "./controllers/health.controller";
 
 const app: Application = express();
@@ -41,7 +42,6 @@ app.use(
     origin: (origin, callback) => {
       // Allow requests with no origin (Postman, mobile apps, server-to-server)
       if (!origin) {
-        console.log('[CORS] ✅ Allowing request with no origin');
         return callback(null, true);
       }
 
@@ -49,13 +49,13 @@ app.use(
 
       // ✅ Allow localhost in any environment
       if (origin.startsWith("http://localhost") || origin.startsWith("http://127.0.0.1")) {
-        console.log('[CORS] ✅ Allowing localhost origin:', origin);
+
         return callback(null, true);
       }
 
       // ✅ Allow your deployed frontend
       if (origin === 'https://demo.easyvisa.ai' || origin === 'https://demo-canada.easyvisa.ai') {
-        console.log('[CORS] ✅ Allowing deployed frontend:', origin);
+
         return callback(null, true);
       }
 
@@ -63,18 +63,16 @@ app.use(
       if (process.env.NODE_ENV !== "production") {
         // Allow network IPs in development
         if (networkIPs.some(ip => origin.startsWith(ip.replace(":5173", "")))) {
-          console.log('[CORS] ✅ Allowing network IP in development:', origin);
+
           return callback(null, true);
         }
 
         // Allow any local network IP in development (for testing)
         const localNetworkPattern = /^http:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)/;
         if (localNetworkPattern.test(origin)) {
-          console.log('[CORS] ✅ Allowing local network IP in development:', origin);
           return callback(null, true);
         }
 
-        console.log('[CORS] ✅ Development mode - allowing origin:', origin);
         return callback(null, true); // Allow all in development
       }
 
@@ -86,13 +84,11 @@ app.use(
 
       // ✅ Check explicit allowlist for production
       if (allowedOrigins.includes(origin)) {
-        console.log('[CORS] ✅ Origin in allowlist:', origin);
         return callback(null, true);
       }
 
       // ✅ Allow Replit host patterns (sisko.replit.dev) used by frontends
       if (origin.includes("sisko.replit.dev")) {
-        console.log('[CORS] ✅ Allowing Replit host:', origin);
         return callback(null, true);
       }
 
@@ -125,5 +121,6 @@ app.use("/api/client-product-payments", clientProductPaymentRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/activity-logs", activityLogRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
+app.use("/api/messages", messageRoutes);
 
 export default app;

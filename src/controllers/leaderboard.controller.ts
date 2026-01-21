@@ -4,13 +4,15 @@ import {
   getLeaderboardSummary,
   setTarget,
   updateTarget,
+  getMonthlyEnrollmentGoal,
 } from "../models/leaderboard.model";
 import { db } from "../config/databaseConnection";
 import { users } from "../schemas/users.schema";
 import { leaderBoard } from "../schemas/leaderBoard.schema";
 import { eq, and } from "drizzle-orm";
 import { logActivity } from "../services/activityLog.service";
-import { emitToAdmin, emitToCounsellor } from "../config/socket";
+import { emitToAdmin, emitToCounsellor, emitToCounsellors } from "../config/socket";
+
 
 /* ==============================
    GET LEADERBOARD
@@ -287,6 +289,25 @@ export const setTargetController = async (req: Request, res: Response) => {
 
       // Emit to counsellor's room (notify the counsellor whose target was set)
       emitToCounsellor(counsellorId, eventName, eventData);
+
+      // Also emit enrollment goal update for this counselor
+      try {
+        const enrollmentGoalData = await getMonthlyEnrollmentGoal(counsellorId, month, year);
+        emitToCounsellor(counsellorId, "enrollment-goal:updated", {
+          month: month,
+          year: year,
+          data: enrollmentGoalData,
+        });
+        // Also emit to admin/manager
+        emitToAdmin("enrollment-goal:updated", {
+          month: month,
+          year: year,
+          counsellorId: counsellorId,
+          data: enrollmentGoalData,
+        });
+      } catch (goalError) {
+        console.error("Enrollment goal update emit error:", goalError);
+      }
     } catch (wsError) {
       // Don't fail the request if WebSocket fails
       console.error("WebSocket emit error in setTargetController:", wsError);
@@ -423,6 +444,25 @@ export const updateTargetController = async (req: Request, res: Response) => {
 
         // Emit to counsellor's room (notify the counsellor whose target was updated)
         emitToCounsellor(updated.counsellor_id, eventName, eventData);
+
+        // Also emit enrollment goal update for this counselor
+        try {
+          const enrollmentGoalData = await getMonthlyEnrollmentGoal(updated.counsellor_id, month, year);
+          emitToCounsellor(updated.counsellor_id, "enrollment-goal:updated", {
+            month: month,
+            year: year,
+            data: enrollmentGoalData,
+          });
+          // Also emit to admin/manager
+          emitToAdmin("enrollment-goal:updated", {
+            month: month,
+            year: year,
+            counsellorId: updated.counsellor_id,
+            data: enrollmentGoalData,
+          });
+        } catch (goalError) {
+          console.error("Enrollment goal update emit error:", goalError);
+        }
       }
     } catch (wsError) {
       // Don't fail the request if WebSocket fails
@@ -432,6 +472,93 @@ export const updateTargetController = async (req: Request, res: Response) => {
     res.status(200).json({
       success: true,
       data: updated,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+/* ==============================
+   GET MONTHLY ENROLLMENT GOAL
+   GET /api/leaderboard/enrollment-goal?counsellorId=1&month=1&year=2026
+   Access: admin, manager, counsellor
+   For counsellors: can only access their own data
+   For admin/manager: can access any counsellor's data
+============================== */
+export const getMonthlyEnrollmentGoalController = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    const userId = req.user.id;
+    const userRole = req.user.role;
+
+    // Get counsellorId from query params
+    const counsellorIdParam = req.query.counsellorId
+      ? parseInt(req.query.counsellorId as string)
+      : null;
+
+    // Determine which counsellorId to use
+    let counsellorId: number;
+
+    if (userRole === "counsellor") {
+      // Counsellors can only view their own data
+      counsellorId = userId;
+    } else if (userRole === "admin" || userRole === "manager") {
+      // Admin and manager can view any counsellor's data
+      if (!counsellorIdParam || isNaN(counsellorIdParam) || counsellorIdParam <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "counsellorId is required for admin/manager",
+        });
+      }
+      counsellorId = counsellorIdParam;
+    } else {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    // Get month and year from query params, default to current month/year
+    const currentDate = new Date();
+    const month = req.query.month
+      ? parseInt(req.query.month as string)
+      : currentDate.getMonth() + 1;
+    const year = req.query.year
+      ? parseInt(req.query.year as string)
+      : currentDate.getFullYear();
+
+    // Validate month and year
+    if (isNaN(month) || month < 1 || month > 12) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid month. Must be between 1 and 12",
+      });
+    }
+
+    if (isNaN(year) || year < 2000 || year > 3000) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid year",
+      });
+    }
+
+    const goalData = await getMonthlyEnrollmentGoal(counsellorId, month, year);
+
+    res.status(200).json({
+      success: true,
+      data: goalData,
     });
   } catch (error: any) {
     res.status(400).json({
