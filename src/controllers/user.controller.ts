@@ -518,21 +518,29 @@ export const updateUserController = async (req: Request, res: Response) => {
     managerId = parsed;
   }
 
+  // Normalize empty strings to undefined for optional fields
+  const normalizeOptional = (value: any) => {
+    if (value === null || value === undefined || value === "") return undefined;
+    return value;
+  };
+
   const payload = {
     fullName: body.fullName ?? body.full_name,
     email: body.email ? body.email.toLowerCase().trim() : undefined,
     password: body.password,
     role: body.role,
-    empId: body.empId ?? body.emp_id,
+    empId: normalizeOptional(body.empId ?? body.emp_id),
     managerId,
-    officePhone:
+    officePhone: normalizeOptional(
       body.officePhone ??
       body.office_phone ??
       body.company_phone_no ??
-      body.office_phone_no,
-    personalPhone:
-      body.personalPhone ?? body.personal_phone ?? body.personal_phone_no,
-    designation: body.designation,
+      body.office_phone_no
+    ),
+    personalPhone: normalizeOptional(
+      body.personalPhone ?? body.personal_phone ?? body.personal_phone_no
+    ),
+    designation: normalizeOptional(body.designation),
     isSupervisor: body.isSupervisor ?? body.is_supervisor,
   };
 

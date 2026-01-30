@@ -35,7 +35,6 @@ import {
   boolean,
 } from "drizzle-orm/pg-core";
 import { users } from "./users.schema";
-import { saleTypes } from "./saleType.schema";
 import { leadTypes } from "./leadType.schema";
 
 export const clientInformation = pgTable(
@@ -51,9 +50,7 @@ export const clientInformation = pgTable(
 
     enrollmentDate: date("date").notNull(),
 
-    saleTypeId: serial("sale_type_id")
-      .references(() => saleTypes.saleTypeId)
-      .notNull(),
+    passportDetails: varchar("passport_details", { length: 100 }).notNull().unique(),
 
     leadTypeId: serial("lead_type_id")
       .references(() => leadTypes.id)
@@ -66,9 +63,9 @@ export const clientInformation = pgTable(
   (table) => ({
     counsellorIdx: index("idx_client_counsellor").on(table.counsellorId),
 
-    saleTypeIdx: index("idx_client_sale_type").on(table.saleTypeId),
-
     leadTypeIdx: index("idx_client_lead_type").on(table.leadTypeId),
+
+    passportDetailsIdx: index("idx_client_passport_details").on(table.passportDetails),
 
     enrollmentDateIdx: index("idx_client_enrollment_date").on(
       table.enrollmentDate

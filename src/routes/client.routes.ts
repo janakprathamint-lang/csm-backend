@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { saveClientController, getAllClientsByCounsellorController, getAllClientsController, getClientCompleteDetailsController, getArchivedClientsController, archiveClientController } from "../controllers/client.controller";
+import { saveClientController, getAllClientsByCounsellorController, getAllClientsController, getClientCompleteDetailsController, getArchivedClientsController, archiveClientController, getAllClientsForAdminController, transferClientController } from "../controllers/client.controller";
 import { requireAuth, requireRole } from "../middlewares/auth.middleware";
 import { preventDuplicateRequests } from "../middlewares/requestDeduplication.middleware";
 
@@ -67,4 +67,20 @@ router.get(
   getAllClientsByCounsellorController
 );
 
+
+/**
+ * Get all clients for admin
+ */
+router.get(
+  "/admin/all-clients",
+  requireAuth, requireRole("admin"),
+  getAllClientsForAdminController
+);
+
+// Client Transfer to another counsellor
+router.put(
+  "/admin/transfer-client",
+  requireAuth, requireRole("admin"),
+  transferClientController
+);
 export default router;

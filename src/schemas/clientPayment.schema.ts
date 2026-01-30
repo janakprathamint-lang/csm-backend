@@ -57,10 +57,12 @@ import {
   timestamp,
   bigserial,
   bigint,
+  serial,
   pgEnum,
   index,
 } from "drizzle-orm/pg-core";
 import { clientInformation } from "./clientInformation.schema";
+import { saleTypes } from "./saleType.schema";
 
 export const stageEnum = pgEnum("stage_enum", [
   "INITIAL",
@@ -76,6 +78,10 @@ export const clientPayments = pgTable(
 
     clientId: bigint("client_id", { mode: "number" })
       .references(() => clientInformation.clientId, { onDelete: "cascade" })
+      .notNull(),
+
+    saleTypeId: serial("sale_type_id")
+      .references(() => saleTypes.saleTypeId)
       .notNull(),
 
     totalPayment: decimal("total_payment", {
@@ -97,6 +103,8 @@ export const clientPayments = pgTable(
   },
   (table) => ({
     clientIdx: index("idx_payment_client").on(table.clientId),
+
+    saleTypeIdx: index("idx_payment_sale_type").on(table.saleTypeId),
 
     stageIdx: index("idx_payment_stage").on(table.stage),
 

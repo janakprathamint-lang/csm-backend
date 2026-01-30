@@ -1,5 +1,7 @@
 import { db } from "../config/databaseConnection";
+import pool from "../config/databaseConnection";
 import { clientPayments } from "../schemas/clientPayment.schema";
+import { saleTypes } from "../schemas/saleType.schema";
 import { eq, and, ne } from "drizzle-orm";
 
 export type PaymentStage =
@@ -11,6 +13,7 @@ export type PaymentStage =
 interface SaveClientPaymentInput {
   paymentId?: number; // 👈 optional
   clientId: number;
+  saleTypeId: number;
   totalPayment: string;
   stage: PaymentStage;
   amount: string;
@@ -25,6 +28,7 @@ export const saveClientPayment = async (
   // Normalize IDs - convert strings to numbers if needed
   const paymentId = data.paymentId ? Number(data.paymentId) : undefined;
   const clientId = Number(data.clientId);
+  const saleTypeId = Number(data.saleTypeId);
   const {
     totalPayment,
     stage,
@@ -38,18 +42,44 @@ export const saveClientPayment = async (
     throw new Error("Valid clientId is required");
   }
 
+  if (!saleTypeId || !Number.isFinite(saleTypeId) || saleTypeId <= 0) {
+    throw new Error("Valid saleTypeId is required");
+  }
+
   if (!stage || !amount || !totalPayment) {
     throw new Error("Required payment fields missing: stage, amount, totalPayment");
   }
 
-  // Provide defaults for NOT NULL fields if not provided
-  // paymentDate and invoiceNo are NOT NULL in the schema
+  // Validate sale type exists
+  const saleType = await db
+    .select({ id: saleTypes.saleTypeId })
+    .from(saleTypes)
+    .where(eq(saleTypes.saleTypeId, saleTypeId))
+    .limit(1);
+
+  if (!saleType.length) {
+    throw new Error("Invalid sale type");
+  }
+
+  // Provide default for NOT NULL field (paymentDate is NOT NULL in the schema)
   const finalPaymentDate = paymentDate || new Date().toISOString().split('T')[0];
-  const finalInvoiceNo = invoiceNo || `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  // Normalize invoiceNo: convert empty string to null (invoiceNo can be NULL)
+  // User can provide a unique invoice number, or leave it NULL
+  let normalizedInvoiceNo: string | null = null;
+  if (invoiceNo !== undefined && invoiceNo !== null) {
+    const trimmed = String(invoiceNo).trim();
+    normalizedInvoiceNo = trimmed.length > 0 ? trimmed : null;
+  }
 
   /* =========================
-     UPDATE PAYMENT
+     UPSERT PAYMENT (with IS DISTINCT FROM check)
   ========================= */
+  const normalizedRemarks = remarks ? String(remarks).trim() : null;
+  const normalizedTotalPayment = String(totalPayment);
+  const normalizedAmount = String(amount);
+
+  // If paymentId is provided, validate it exists first
   if (paymentId && Number.isFinite(paymentId) && paymentId > 0) {
     const existingPayment = await db
       .select({ id: clientPayments.paymentId, invoiceNo: clientPayments.invoiceNo })
@@ -61,93 +91,169 @@ export const saveClientPayment = async (
     }
 
     // Check if invoiceNo is being changed and if the new invoiceNo already exists (excluding current payment)
-    if (finalInvoiceNo !== existingPayment[0].invoiceNo) {
+    // Only check for duplicates if a new invoiceNo is provided (not NULL)
+    if (normalizedInvoiceNo !== null && normalizedInvoiceNo !== existingPayment[0].invoiceNo) {
       const duplicateCheck = await db
         .select({ id: clientPayments.paymentId })
         .from(clientPayments)
         .where(and(
-          eq(clientPayments.invoiceNo, finalInvoiceNo),
+          eq(clientPayments.invoiceNo, normalizedInvoiceNo),
           ne(clientPayments.paymentId, paymentId)
         ))
         .limit(1);
 
       if (duplicateCheck.length > 0) {
-        throw new Error(`Invoice number "${finalInvoiceNo}" already exists. Please use a different invoice number.`);
+        throw new Error(`Invoice number "${normalizedInvoiceNo}" already exists. Please use a different invoice number.`);
       }
     }
+  } else {
+    // For new records, check if invoiceNo already exists (only if invoiceNo is provided)
+    if (normalizedInvoiceNo !== null) {
+      const duplicateCheck = await db
+        .select({ id: clientPayments.paymentId })
+        .from(clientPayments)
+        .where(eq(clientPayments.invoiceNo, normalizedInvoiceNo))
+        .limit(1);
 
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[UPDATE PAYMENT] Updating payment ${paymentId} with:`, {
-        clientId,
-        totalPayment,
-        stage,
-        amount,
-        paymentDate: finalPaymentDate,
-        invoiceNo: finalInvoiceNo,
+      if (duplicateCheck.length > 0) {
+        throw new Error(`Invoice number "${normalizedInvoiceNo}" already exists. Please use a different invoice number.`);
+      }
+    }
+  }
+
+  // Use UPSERT with IS DISTINCT FROM to only update when data actually changes
+  // Note: When WHERE clause is false, PostgreSQL still returns the existing row but rowCount = 0
+  const upsertQuery = paymentId && Number.isFinite(paymentId) && paymentId > 0
+    ? `
+      WITH updated AS (
+        INSERT INTO client_payment (
+          id, client_id, sale_type_id, total_payment, stage, amount, payment_date, invoice_no, remarks
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+          client_id = EXCLUDED.client_id,
+          sale_type_id = EXCLUDED.sale_type_id,
+          total_payment = EXCLUDED.total_payment,
+          stage = EXCLUDED.stage,
+          amount = EXCLUDED.amount,
+          payment_date = EXCLUDED.payment_date,
+          invoice_no = EXCLUDED.invoice_no,
+          remarks = EXCLUDED.remarks
+        WHERE (
+          client_payment.client_id IS DISTINCT FROM EXCLUDED.client_id
+          OR client_payment.sale_type_id IS DISTINCT FROM EXCLUDED.sale_type_id
+          OR client_payment.total_payment IS DISTINCT FROM EXCLUDED.total_payment
+          OR client_payment.stage IS DISTINCT FROM EXCLUDED.stage
+          OR client_payment.amount IS DISTINCT FROM EXCLUDED.amount
+          OR client_payment.payment_date IS DISTINCT FROM EXCLUDED.payment_date
+          OR client_payment.invoice_no IS DISTINCT FROM EXCLUDED.invoice_no
+          OR client_payment.remarks IS DISTINCT FROM EXCLUDED.remarks
+        )
+        RETURNING id, client_id, sale_type_id, total_payment, stage, amount, payment_date, invoice_no, remarks, created_at
+      )
+      SELECT * FROM updated
+      UNION ALL
+      SELECT id, client_id, sale_type_id, total_payment, stage, amount, payment_date, invoice_no, remarks, created_at
+      FROM client_payment
+      WHERE id = $1 AND NOT EXISTS (SELECT 1 FROM updated)
+      LIMIT 1;
+    `
+    : `
+      INSERT INTO client_payment (
+        client_id, sale_type_id, total_payment, stage, amount, payment_date, invoice_no, remarks
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id, client_id, sale_type_id, total_payment, stage, amount, payment_date, invoice_no, remarks, created_at;
+    `;
+
+  const values = paymentId && Number.isFinite(paymentId) && paymentId > 0
+    ? [paymentId, clientId, saleTypeId, normalizedTotalPayment, stage, normalizedAmount, finalPaymentDate, normalizedInvoiceNo, normalizedRemarks]
+    : [clientId, saleTypeId, normalizedTotalPayment, stage, normalizedAmount, finalPaymentDate, normalizedInvoiceNo, normalizedRemarks];
+
+  try {
+    const result = await pool.query(upsertQuery, values);
+    const rowCount = result.rowCount || 0;
+    const row = result.rows[0];
+
+    if (!row) {
+      // Log the query and values for debugging
+      console.error("UPSERT query returned no rows:", {
+        paymentId,
+        query: upsertQuery.substring(0, 200),
+        values: values.map((v, i) => ({ param: i + 1, value: v, type: typeof v })),
       });
+      throw new Error("Failed to save payment: Query returned no rows");
     }
 
-    const [updatedPayment] = await db
-      .update(clientPayments)
-      .set({
-        clientId,
-        totalPayment: String(totalPayment),
-        stage,
-        amount: String(amount),
-        paymentDate: finalPaymentDate,
-        invoiceNo: finalInvoiceNo,
-        remarks: remarks ? String(remarks).trim() : null,
-      })
-      .where(eq(clientPayments.paymentId, paymentId))
-      .returning();
-
-    if (!updatedPayment) {
-      throw new Error("Failed to update payment");
-    }
+    // Determine action based on rowCount and whether it's a new record
+    const isNewRecord = !paymentId || !Number.isFinite(paymentId) || paymentId <= 0;
+    const action = isNewRecord ? "CREATED" : (rowCount > 0 ? "UPDATED" : "NO_CHANGE");
 
     return {
-      action: "UPDATED",
-      payment: updatedPayment,
+      action,
+      payment: {
+        paymentId: row.id,
+        clientId: row.client_id,
+        saleTypeId: row.sale_type_id,
+        totalPayment: row.total_payment,
+        stage: row.stage,
+        amount: row.amount,
+        paymentDate: row.payment_date,
+        invoiceNo: row.invoice_no,
+        remarks: row.remarks,
+        createdAt: row.created_at,
+      },
+      rowCount, // Include rowCount so controller can check if real change occurred
     };
-  }
-
-  /* =========================
-     CREATE PAYMENT
-  ========================= */
-  // Check if invoiceNo already exists before creating
-  const duplicateCheck = await db
-    .select({ id: clientPayments.paymentId })
-    .from(clientPayments)
-    .where(eq(clientPayments.invoiceNo, finalInvoiceNo))
-    .limit(1);
-
-  if (duplicateCheck.length > 0) {
-    throw new Error(`Invoice number "${finalInvoiceNo}" already exists. Please use a different invoice number.`);
-  }
-
-  const [newPayment] = await db
-    .insert(clientPayments)
-    .values({
+  } catch (error: any) {
+    // Log the actual database error
+    console.error("Database error in saveClientPayment:", {
+      error: error.message,
+      code: error.code,
+      detail: error.detail,
+      constraint: error.constraint,
+      paymentId,
       clientId,
-      totalPayment: String(totalPayment),
-      stage,
-      amount: String(amount),
-      paymentDate: finalPaymentDate,
-      invoiceNo: finalInvoiceNo,
-      remarks: remarks ? String(remarks).trim() : null,
-    })
-    .returning();
-
-  return {
-    action: "CREATED",
-    payment: newPayment,
-  };
+      invoiceNo: normalizedInvoiceNo,
+    });
+    throw error;
+  }
 };
 
-
 export const getPaymentsByClientId = async (clientId: number) => {
-  return db
-    .select()
+  const payments = await db
+    .select({
+      paymentId: clientPayments.paymentId,
+      clientId: clientPayments.clientId,
+      saleTypeId: clientPayments.saleTypeId,
+      totalPayment: clientPayments.totalPayment,
+      stage: clientPayments.stage,
+      amount: clientPayments.amount,
+      paymentDate: clientPayments.paymentDate,
+      invoiceNo: clientPayments.invoiceNo,
+      remarks: clientPayments.remarks,
+      createdAt: clientPayments.createdAt,
+      // Sale type information
+      saleType: saleTypes.saleType,
+    })
     .from(clientPayments)
+    .leftJoin(saleTypes, eq(clientPayments.saleTypeId, saleTypes.saleTypeId))
     .where(eq(clientPayments.clientId, clientId));
+
+  // Transform to include saleType object instead of saleTypeId
+  return payments.map((payment) => ({
+    paymentId: payment.paymentId,
+    clientId: payment.clientId,
+    saleType: payment.saleTypeId
+      ? {
+          id: payment.saleTypeId,
+          saleType: payment.saleType || null,
+        }
+      : null,
+    totalPayment: payment.totalPayment,
+    stage: payment.stage,
+    amount: payment.amount,
+    paymentDate: payment.paymentDate,
+    invoiceNo: payment.invoiceNo,
+    remarks: payment.remarks,
+    createdAt: payment.createdAt,
+  }));
 };

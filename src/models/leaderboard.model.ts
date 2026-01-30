@@ -55,7 +55,7 @@ const getEntityAmounts = async (
         break;
       case "creditCard_id":
         table = creditCard;
-        amountColumn = creditCard.amount;
+        // amountColumn = creditCard.amount;
         break;
       case "ielts_id":
         table = ielts;
@@ -244,20 +244,32 @@ export const getLeaderboard = async (month: number, year: number) => {
   // Calculate enrollments and revenue for each counsellor
   const counsellorStats = await Promise.all(
     allCounsellors.map(async (counsellor) => {
-      // Count enrollments (clients enrolled in this month/year)
+      // Count enrollments: unique clients who have payments (INITIAL, BEFORE_VISA, AFTER_VISA) in this month/year
       const [enrollmentResult] = await db
         .select({
-          count: count(clientInformation.clientId),
+          count: sql<number>`COUNT(DISTINCT ${clientPayments.clientId})`,
         })
-        .from(clientInformation)
+        .from(clientPayments)
+        .innerJoin(
+          clientInformation,
+          eq(clientPayments.clientId, clientInformation.clientId)
+        )
         .where(
-          and(
-            eq(clientInformation.counsellorId, counsellor.id),
-            eq(clientInformation.archived, false),
-            gte(clientInformation.enrollmentDate, startDateStr),
-            lte(clientInformation.enrollmentDate, endDateStr)
-          )
-        );
+          sql`(
+            ${clientInformation.counsellorId} = ${counsellor.id}
+            AND ${clientInformation.archived} = false
+            AND ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+            AND (
+              (${clientPayments.paymentDate} IS NOT NULL
+                AND ${clientPayments.paymentDate} >= ${startDateStr}
+                AND ${clientPayments.paymentDate} <= ${endDateStr})
+              OR
+              (${clientPayments.paymentDate} IS NULL
+                AND ${clientPayments.createdAt} >= ${startTimestamp}
+                AND ${clientPayments.createdAt} <= ${endTimestamp})
+            )
+          )`
+        ) as any;
 
       const enrollments = enrollmentResult?.count || 0;
 
@@ -347,19 +359,31 @@ export const getLeaderboardSummary = async (month: number, year: number) => {
 
   const totalCounsellors = totalCounsellorsResult?.count || 0;
 
-  // Total enrollments (all counsellors combined)
+  // Total enrollments (all counsellors combined): unique clients who have payments (INITIAL, BEFORE_VISA, AFTER_VISA) in this month/year
   const [totalEnrollmentsResult] = await db
     .select({
-      count: count(clientInformation.clientId),
+      count: sql<number>`COUNT(DISTINCT ${clientPayments.clientId})`,
     })
-    .from(clientInformation)
+    .from(clientPayments)
+    .innerJoin(
+      clientInformation,
+      eq(clientPayments.clientId, clientInformation.clientId)
+    )
     .where(
-      and(
-        eq(clientInformation.archived, false),
-        gte(clientInformation.enrollmentDate, startDateStr),
-        lte(clientInformation.enrollmentDate, endDateStr)
-      )
-    );
+      sql`(
+        ${clientInformation.archived} = false
+        AND ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+        AND (
+          (${clientPayments.paymentDate} IS NOT NULL
+            AND ${clientPayments.paymentDate} >= ${startDateStr}
+            AND ${clientPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientPayments.paymentDate} IS NULL
+            AND ${clientPayments.createdAt} >= ${startTimestamp}
+            AND ${clientPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    ) as any;
 
   const totalEnrollments = totalEnrollmentsResult?.count || 0;
 
@@ -705,21 +729,35 @@ export const getMonthlyEnrollmentGoal = async (
   const endDate = new Date(targetYear, targetMonth, 0, 23, 59, 59, 999);
   const startDateStr = startDate.toISOString().split("T")[0];
   const endDateStr = endDate.toISOString().split("T")[0];
+  const startTimestamp = startDate.toISOString();
+  const endTimestamp = endDate.toISOString();
 
-  // Count enrollments (achieved) for this month/year
+  // Count enrollments (achieved) for this month/year: unique clients who have payments (INITIAL, BEFORE_VISA, AFTER_VISA)
   const [enrollmentResult] = await db
     .select({
-      count: count(clientInformation.clientId),
+      count: sql<number>`COUNT(DISTINCT ${clientPayments.clientId})`,
     })
-    .from(clientInformation)
+    .from(clientPayments)
+    .innerJoin(
+      clientInformation,
+      eq(clientPayments.clientId, clientInformation.clientId)
+    )
     .where(
-      and(
-        eq(clientInformation.counsellorId, counsellorId),
-        eq(clientInformation.archived, false),
-        gte(clientInformation.enrollmentDate, startDateStr),
-        lte(clientInformation.enrollmentDate, endDateStr)
-      )
-    );
+      sql`(
+        ${clientInformation.counsellorId} = ${counsellorId}
+        AND ${clientInformation.archived} = false
+        AND ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+        AND (
+          (${clientPayments.paymentDate} IS NOT NULL
+            AND ${clientPayments.paymentDate} >= ${startDateStr}
+            AND ${clientPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientPayments.paymentDate} IS NULL
+            AND ${clientPayments.createdAt} >= ${startTimestamp}
+            AND ${clientPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    ) as any;
 
   const achieved = enrollmentResult?.count || 0;
 

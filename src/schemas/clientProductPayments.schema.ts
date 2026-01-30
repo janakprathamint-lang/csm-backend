@@ -42,6 +42,12 @@ export const productTypeEnum = pgEnum("product_type_enum", [
   "CREDIT_CARD",
   // Common products
   "VISA_EXTENSION",
+  // Additional master-only products
+  "REFUSAL_CHARGES",
+  "KIDS_STUDY_PERMIT",
+  "CANADA_FUND",
+  "EMPLOYMENT_VERIFICATION_CHARGES",
+  "ADDITIONAL_AMOUNT_STATEMENT_CHARGES",
 ]);
 
 // Entity type enum - maps to database tables
@@ -58,6 +64,7 @@ export const entityTypeEnum = pgEnum("entity_type_enum", [
   "insurance_id",
   "beaconAccount_id",
   "creditCard_id",
+  "allFinance_id",
   "master_only"
 ]);
 

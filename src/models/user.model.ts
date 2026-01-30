@@ -198,29 +198,28 @@ export const updateUserByAdmin = async (
     data.email = newEmail;
   }
 
+  // Track if empId was originally provided and normalize it
+  let normalizedEmpIdValue: string | null | undefined = undefined;
   if (data.empId !== undefined) {
     // Normalize empId: convert empty strings/whitespace to null to avoid unique constraint violations
     const normalizedEmpId = data.empId && data.empId.trim() !== "" ? data.empId.trim() : null;
-    const empIdValue = normalizedEmpId ? normalizedEmpId.toUpperCase() : null;
+    normalizedEmpIdValue = normalizedEmpId ? normalizedEmpId.toUpperCase() : null;
 
-    if (empIdValue && !/^(EMP-\d{4}|PINT\d{5})$/.test(empIdValue)) {
+    if (normalizedEmpIdValue && !/^(PINT\d{5})$/.test(normalizedEmpIdValue)) {
       throw new Error("empId must match format 'PINT12345' or 'EMP-XXXX' (e.g., PINT41922 or EMP-0025)");
     }
 
-    if (empIdValue) {
+    if (normalizedEmpIdValue) {
       const existingEmp = await db
         .select({ id: users.id })
         .from(users)
-        .where(and(eq(users.emp_id, empIdValue), ne(users.id, userId)))
+        .where(and(eq(users.emp_id, normalizedEmpIdValue), ne(users.id, userId)))
         .limit(1);
 
       if (existingEmp.length > 0) {
         throw new Error("Employee ID already exists");
       }
     }
-
-    // normalize
-    data.empId = empIdValue;
   }
 
   let passwordHash: string | undefined;
@@ -285,8 +284,8 @@ export const updateUserByAdmin = async (
         passwordHash,
         role: finalRole,
         emp_id:
-          data.empId !== undefined
-            ? (data.empId && data.empId.trim() !== "" ? data.empId.trim().toUpperCase() : null)
+          normalizedEmpIdValue !== undefined
+            ? normalizedEmpIdValue
             : existingUser.empId,
         managerId: finalRole === "counsellor" ? finalManagerId : null,
         officePhone: data.officePhone,
@@ -378,6 +377,7 @@ export const getAllManagers = async () => {
     .where(eq(users.role, "manager"));
 };
 
+// Get all counsellors
 export const getAllCounsellors = async () => {
   // Get all counsellors with their client counts
   const counsellorsWithClientCount = await db
@@ -394,6 +394,18 @@ export const getAllCounsellors = async () => {
     .groupBy(users.id, users.fullName, users.email, users.managerId);
 
   return counsellorsWithClientCount;
+};
+
+// Get counsellor by id
+export const getCounsellorById = async (counsellorId: number) => {
+  const counsellor = await db
+    .select({ id: users.id, fullName: users.fullName })
+    .from(users)
+    .where(eq(users.id, counsellorId));
+  if (!counsellor.length) {
+    return null;
+  }
+  return counsellor[0];
 };
 
 /* ================================

@@ -12,6 +12,8 @@ import dashboardRoutes from "./routes/dashboard.routes";
 import activityLogRoutes from "./routes/activityLog.routes";
 import leaderboardRoutes from "./routes/leaderboard.routes";
 import messageRoutes from "./routes/message.routes";
+import googleSheetRoutes from "./routes/googleSheet.routes";
+import allFinanceRoutes from "./routes/allFinance.routes";
 import { healthController } from "./controllers/health.controller";
 
 const app: Application = express();
@@ -122,5 +124,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/activity-logs", activityLogRoutes);
 app.use("/api/leaderboard", leaderboardRoutes);
 app.use("/api/messages", messageRoutes);
+app.use("/api/google-sheets", googleSheetRoutes);
+app.use("/api/all-finance", allFinanceRoutes);
 
 export default app;

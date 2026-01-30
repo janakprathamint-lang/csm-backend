@@ -5,13 +5,15 @@ import {
   ProductType,
 } from "../models/clientProductPayments.model";
 import { getClientFullDetailsById, getClientsByCounsellor, getAllClientsForAdmin } from "../models/client.model";
-import { emitToCounsellor, emitToAdmin, emitDashboardUpdate } from "../config/socket";
+import { emitToCounsellor, emitToAdmin, emitDashboardUpdate, emitToRoles } from "../config/socket";
 import { getDashboardStats } from "../models/dashboard.model";
 import { db } from "../config/databaseConnection";
 import { clientInformation } from "../schemas/clientInformation.schema";
 import { clientProductPayments } from "../schemas/clientProductPayments.schema";
-import { eq } from "drizzle-orm";
+import { users } from "../schemas/users.schema";
+import { eq, and } from "drizzle-orm";
 import { logActivity } from "../services/activityLog.service";
+import { createIndividualMessage } from "../models/message.model";
 
 // export const createClientProductPaymentController = async (
 //   req: Request,
@@ -116,6 +118,111 @@ export const saveClientProductPaymentController = async (
 
     const counsellorId = client.counsellorId;
 
+    // Check if this is a partial payment that needs approval
+    const isPartialPayment =
+      result.record.productName === "ALL_FINANCE_EMPLOYEMENT" &&
+      result.action === "CREATED" &&
+      req.body.entityData?.partialPayment === true;
+
+    // Send notifications for partial payment approval
+    if (isPartialPayment && req.user?.id) {
+      try {
+        // Get counsellor info to find manager
+        const [counsellor] = await db
+          .select({
+            id: users.id,
+            fullName: users.fullName,
+            managerId: users.managerId,
+          })
+          .from(users)
+          .where(eq(users.id, counsellorId))
+          .limit(1);
+
+        // Get all super admins
+        const superAdmins = await db
+          .select({
+            id: users.id,
+            fullName: users.fullName,
+          })
+          .from(users)
+          .where(eq(users.role, "admin"));
+
+        // Collect target user IDs: manager + super admins
+        const targetUserIds: number[] = [];
+
+        if (counsellor?.managerId) {
+          targetUserIds.push(counsellor.managerId);
+        }
+
+        superAdmins.forEach(admin => {
+          if (!targetUserIds.includes(admin.id)) {
+            targetUserIds.push(admin.id);
+          }
+        });
+
+        if (targetUserIds.length > 0) {
+          // Get client info for notification message
+          const [clientInfo] = await db
+            .select({
+              fullName: clientInformation.fullName,
+            })
+            .from(clientInformation)
+            .where(eq(clientInformation.clientId, clientId))
+            .limit(1);
+
+          const amount = req.body.entityData?.amount || req.body.amount || "0";
+          const counsellorName = counsellor?.fullName || "Unknown";
+          const clientName = clientInfo?.fullName || "Unknown";
+
+          // Create database notification
+          await createIndividualMessage(
+            {
+              title: "Partial Payment Approval Required",
+              message: `${counsellorName} has created a partial payment of $${amount} for client ${clientName}. Please review and approve.`,
+              targetUserIds: targetUserIds,
+              priority: "high",
+            },
+            req.user.id
+          );
+
+          // Send Socket.io notification to managers and admins
+          const notificationData = {
+            type: "partial_payment_approval",
+            financeId: result.record.entityId,
+            productPaymentId: result.record.productPaymentId,
+            clientId: clientId,
+            clientName: clientName,
+            counsellorId: counsellorId,
+            counsellorName: counsellorName,
+            amount: amount,
+            message: `Partial payment of $${amount} requires your approval`,
+          };
+
+          // Emit to manager if exists
+          if (counsellor?.managerId) {
+            emitToCounsellor(counsellor.managerId, "notification:partial_payment", notificationData);
+          }
+
+          // Emit to admin room (super admins) - this requires admins to join "admin" room
+          emitToAdmin("notification:partial_payment", notificationData);
+
+          // Also emit to role-based rooms (role:admin and role:manager) - this requires users to join via join:role
+          emitToRoles(["manager", "admin"], "notification:partial_payment", notificationData);
+
+          // Also emit to all admins individually via their counsellor rooms (fallback)
+          // This ensures admins get notifications even if they haven't joined admin room
+          superAdmins.forEach(admin => {
+            emitToCounsellor(admin.id, "notification:partial_payment", notificationData);
+          });
+
+          console.log(`📤 Sent partial payment notification to ${targetUserIds.length} users (${superAdmins.length} admins, ${counsellor?.managerId ? 1 : 0} manager)`);
+        }
+      } catch (notificationError) {
+        // Don't fail the request if notification fails
+        console.error("Notification error in saveClientProductPaymentController:", notificationError);
+      }
+    }
+
     // Log activity
     try {
       if (req.user?.id) {
@@ -137,6 +244,7 @@ export const saveClientProductPaymentController = async (
             entityType: result.record.entityType,
             entityId: result.record.entityId,
             amount: result.record.amount,
+            isPartialPayment: isPartialPayment,
           },
           performedBy: req.user.id,
         });

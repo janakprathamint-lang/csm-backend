@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { saveClient, getClientFullDetailsById,getClientsByCounsellor, getAllCounsellorIds, getAllClientsForAdmin, getAllClientsForManager, getArchivedClientsByCounsellor, getAllArchivedClientsForAdmin, getAllArchivedClientsForManager, updateClientArchiveStatus } from "../models/client.model";
+import { saveClient, getClientFullDetailsById,getClientsByCounsellor, getAllCounsellorIds, getAllClientsForAdmin, getAllClientsForManager, getArchivedClientsByCounsellor, getAllArchivedClientsForAdmin, getAllArchivedClientsForManager, updateClientArchiveStatus, getAllClients, updateClientCounsellor } from "../models/client.model";
 import { getProductPaymentsByClientId } from "../models/clientProductPayments.model";
 import { emitToCounsellor, emitToAdmin, emitDashboardUpdate, emitToCounsellors } from "../config/socket";
 import { getDashboardStats } from "../models/dashboard.model";
@@ -9,6 +9,7 @@ import { db } from "../config/databaseConnection";
 import { clientInformation } from "../schemas/clientInformation.schema";
 import { users } from "../schemas/users.schema";
 import { eq } from "drizzle-orm";
+import { getCounsellorById } from "../models/user.model";
 
 /* ==============================
    CREATE CLIENT
@@ -53,7 +54,7 @@ export const saveClientController = async (req: Request, res: Response) => {
             clientId: oldClient.clientId,
             fullName: oldClient.fullName,
             enrollmentDate: oldClient.enrollmentDate,
-            saleTypeId: oldClient.saleTypeId,
+            passportDetails: oldClient.passportDetails,
             leadTypeId: oldClient.leadTypeId,
             counsellorId: oldClient.counsellorId,
           };
@@ -67,24 +68,27 @@ export const saveClientController = async (req: Request, res: Response) => {
     console.log("req.body client", req.body);
     const client = await saveClient(req.body, req.user.id);
 
-    // Log activity
-    try {
-      const action = client.action === "CREATED" ? "CREATE" : "UPDATE";
-      await logActivity(req, {
-        entityType: "client",
-        entityId: client.client.clientId,
-        clientId: client.client.clientId,
-        action: action,
-        oldValue: oldValue,
-        newValue: client.client,
-        description: client.action === "CREATED"
-          ? `Client created: ${client.client.fullName}`
-          : `Client updated: ${client.client.fullName}`,
-        performedBy: req.user.id,
-      });
-    } catch (activityError) {
-      // Don't fail the request if activity log fails
-      console.error("Activity log error in saveClientController:", activityError);
+    // Log activity ONLY when a real insert or real update happens (rowCount > 0 or action is CREATED)
+    // Skip logging if action is NO_CHANGE (data was identical, no actual update occurred)
+    if (client.action !== "NO_CHANGE") {
+      try {
+        const action = client.action === "CREATED" ? "CREATE" : "UPDATE";
+        await logActivity(req, {
+          entityType: "client",
+          entityId: client.client.clientId,
+          clientId: client.client.clientId,
+          action: action,
+          oldValue: oldValue,
+          newValue: client.client,
+          description: client.action === "CREATED"
+            ? `Client created: ${client.client.fullName}`
+            : `Client updated: ${client.client.fullName}`,
+          performedBy: req.user.id,
+        });
+      } catch (activityError) {
+        // Don't fail the request if activity log fails
+        console.error("Activity log error in saveClientController:", activityError);
+      }
     }
 
     // Emit WebSocket event for real-time updates
@@ -222,6 +226,7 @@ export const getClientFullDetailsController = async (req: Request, res: Response
   }
 };
 
+// get all clients (for counsellor / admin) - excludes archived clients
 export const getAllClientsController = async (req: Request, res: Response) => {
   try {
     if (!req.user?.id || !req.user?.role) {
@@ -415,7 +420,7 @@ export const getClientCompleteDetailsController = async (req: Request, res: Resp
 
     const completeDetails = {
       client: clientData.client,
-      saleType: clientData.saleType,
+      leadType: clientData.leadType,
       payments: clientData.payments,
       productPayments: clientData.productPayments, // Already enhanced with entity data
     };
@@ -713,6 +718,53 @@ export const archiveClientController = async (req: Request, res: Response) => {
       console.error("WebSocket emit error:", wsError);
     }
 
+    res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// All clients for admin
+export const getAllClientsForAdminController = async (req: Request, res: Response) => {
+  try {
+    const clients = await getAllClients();
+    res.status(200).json({
+      success: true,
+      data: clients,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Client Transfer to another counsellor
+export const transferClientController = async (req: Request, res: Response) => {
+  try {
+    const { clientId, counsellorId } = req.body;
+    const client = await getClientFullDetailsById(clientId);
+    if (!client) {
+      return res.status(404).json({
+        success: false,
+        message: "Client not found",
+      });
+    }
+    const counsellor = await getCounsellorById(counsellorId);
+    if (!counsellor) {
+      return res.status(404).json({
+        success: false,
+        message: "Counsellor not found",
+      });
+    }
+    const result = await updateClientCounsellor(clientId, counsellor.id);
     res.status(200).json({
       success: true,
       data: result,

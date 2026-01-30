@@ -1,14 +1,15 @@
 import { db } from "../config/databaseConnection";
+import pool from "../config/databaseConnection";
 import { clientInformation } from "../schemas/clientInformation.schema";
 import { clientPayments } from "../schemas/clientPayment.schema";
 import { clientProductPayments } from "../schemas/clientProductPayments.schema";
-import { saleTypes } from "../schemas/saleType.schema";
 import { users } from "../schemas/users.schema";
 import { eq, desc, inArray, and } from "drizzle-orm";
 import { Request, Response } from "express";
 import { getPaymentsByClientId } from "./clientPayment.model";
 import { getProductPaymentsByClientId } from "./clientProductPayments.model";
 import { leadTypes } from "../schemas/leadType.schema";
+import { saleTypes } from "../schemas/saleType.schema";
 
 /* ==============================
    TYPES
@@ -17,7 +18,7 @@ interface SaveClientInput {
   clientId?: number; // 👈 optional → if present, update
   fullName: string;
   enrollmentDate: string;
-  saleTypeId: number;
+  passportDetails: string;
   leadTypeId: number;
 }
 
@@ -54,19 +55,20 @@ export const saveClient = async (
 ) => {
   // Normalize clientId - convert string to number if needed
   const clientId = data.clientId ? Number(data.clientId) : undefined;
-  const { fullName, enrollmentDate, saleTypeId, leadTypeId } = data;
+  const { fullName, enrollmentDate, passportDetails, leadTypeId } = data;
 
-  if (!fullName || !enrollmentDate || !saleTypeId || !leadTypeId) {
+  if (!fullName || !enrollmentDate || !passportDetails || !leadTypeId) {
     throw new Error("All fields are required");
   }
 
-  // Validate numeric fields
-  const normalizedSaleTypeId = Number(saleTypeId);
-  const normalizedLeadTypeId = Number(leadTypeId);
-
-  if (!Number.isFinite(normalizedSaleTypeId) || normalizedSaleTypeId <= 0) {
-    throw new Error("Invalid saleTypeId");
+  // Validate and normalize passportDetails
+  const trimmedPassportDetails = passportDetails.trim();
+  if (trimmedPassportDetails.length === 0) {
+    throw new Error("passportDetails cannot be empty");
   }
+
+  // Validate numeric fields
+  const normalizedLeadTypeId = Number(leadTypeId);
 
   if (!Number.isFinite(normalizedLeadTypeId) || normalizedLeadTypeId <= 0) {
     throw new Error("Invalid leadTypeId");
@@ -82,16 +84,6 @@ export const saveClient = async (
     throw new Error("Invalid counsellor");
   }
 
-  // 🔍 validate sale type
-  const saleType = await db
-    .select({ id: saleTypes.saleTypeId })
-    .from(saleTypes)
-    .where(eq(saleTypes.saleTypeId, normalizedSaleTypeId));
-
-  if (!saleType.length) {
-    throw new Error("Invalid sale type");
-  }
-
   // 🔍 validate lead type
   const leadType = await db
     .select({ id: leadTypes.id })
@@ -103,12 +95,14 @@ export const saveClient = async (
   }
 
   /* ==========================
-     UPDATE CLIENT
+     UPSERT CLIENT (with IS DISTINCT FROM check)
   ========================== */
+  const trimmedFullName = fullName.trim();
+
+  // If clientId is provided, validate it exists first
   if (clientId && Number.isFinite(clientId) && clientId > 0) {
-    // 🔐 check client exists
     const existingClient = await db
-      .select({ id: clientInformation.clientId })
+      .select({ id: clientInformation.clientId, passportDetails: clientInformation.passportDetails })
       .from(clientInformation)
       .where(eq(clientInformation.clientId, clientId));
 
@@ -116,67 +110,88 @@ export const saveClient = async (
       throw new Error("Client not found");
     }
 
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[UPDATE CLIENT] Updating client ${clientId} with:`, {
-        fullName,
-        enrollmentDate,
-        saleTypeId: normalizedSaleTypeId,
-        leadTypeId: normalizedLeadTypeId,
-      });
+    // Check for duplicate passportDetails if updating (exclude current client)
+    if (existingClient[0].passportDetails !== trimmedPassportDetails) {
+      const [duplicateCheck] = await db
+        .select({ id: clientInformation.clientId })
+        .from(clientInformation)
+        .where(eq(clientInformation.passportDetails, trimmedPassportDetails))
+        .limit(1);
+
+      if (duplicateCheck) {
+        throw new Error(`Passport details "${trimmedPassportDetails}" already exists. Please use a different passport details.`);
+      }
     }
+  } else {
+    // Check for duplicate passportDetails when creating new client
+    const [duplicateCheck] = await db
+      .select({ id: clientInformation.clientId })
+      .from(clientInformation)
+      .where(eq(clientInformation.passportDetails, trimmedPassportDetails))
+      .limit(1);
 
-    const [updatedClient] = await db
-      .update(clientInformation)
-      .set({
-        fullName: fullName.trim(),
-        enrollmentDate,
-        saleTypeId: normalizedSaleTypeId,
-        leadTypeId: normalizedLeadTypeId,
-      })
-      .where(eq(clientInformation.clientId, clientId))
-      .returning({
-        clientId: clientInformation.clientId,
-        counsellorId: clientInformation.counsellorId,
-        fullName: clientInformation.fullName,
-        enrollmentDate: clientInformation.enrollmentDate,
-        saleTypeId: clientInformation.saleTypeId,
-        leadTypeId: clientInformation.leadTypeId,
-      });
-
-    if (!updatedClient) {
-      throw new Error("Failed to update client");
+    if (duplicateCheck) {
+      throw new Error(`Passport details "${trimmedPassportDetails}" already exists. Please use a different passport details.`);
     }
-
-    return {
-      action: "UPDATED",
-      client: updatedClient,
-    };
   }
 
-  /* ==========================
-     CREATE CLIENT
-  ========================== */
-  const [newClient] = await db
-    .insert(clientInformation)
-    .values({
-      counsellorId,
-      fullName: fullName.trim(),
-      enrollmentDate,
-      saleTypeId: normalizedSaleTypeId,
-      leadTypeId: normalizedLeadTypeId,
-    })
-    .returning({
-      clientId: clientInformation.clientId,
-      counsellorId: clientInformation.counsellorId,
-      fullName: clientInformation.fullName,
-      enrollmentDate: clientInformation.enrollmentDate,
-      saleTypeId: clientInformation.saleTypeId,
-      leadTypeId: clientInformation.leadTypeId,
-    });
+  // Use UPSERT with IS DISTINCT FROM to only update when data actually changes
+  // If clientId is provided, use it; otherwise let PostgreSQL generate it
+  const upsertQuery = clientId && Number.isFinite(clientId) && clientId > 0
+    ? `
+      INSERT INTO client_information (
+        id, counsellor_id, fullname, date, passport_details, lead_type_id
+      ) VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (id) DO UPDATE SET
+        counsellor_id = EXCLUDED.counsellor_id,
+        fullname = EXCLUDED.fullname,
+        date = EXCLUDED.date,
+        passport_details = EXCLUDED.passport_details,
+        lead_type_id = EXCLUDED.lead_type_id
+      WHERE (
+        client_information.fullname IS DISTINCT FROM EXCLUDED.fullname
+        OR client_information.date IS DISTINCT FROM EXCLUDED.date
+        OR client_information.passport_details IS DISTINCT FROM EXCLUDED.passport_details
+        OR client_information.lead_type_id IS DISTINCT FROM EXCLUDED.lead_type_id
+      )
+      RETURNING id, counsellor_id, fullname, date, passport_details, lead_type_id;
+    `
+    : `
+      INSERT INTO client_information (
+        counsellor_id, fullname, date, passport_details, lead_type_id
+      ) VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, counsellor_id, fullname, date, passport_details, lead_type_id;
+    `;
+
+  const values = clientId && Number.isFinite(clientId) && clientId > 0
+    ? [clientId, counsellorId, trimmedFullName, enrollmentDate, trimmedPassportDetails, normalizedLeadTypeId]
+    : [counsellorId, trimmedFullName, enrollmentDate, trimmedPassportDetails, normalizedLeadTypeId];
+
+  const result = await pool.query(upsertQuery, values);
+  const rowCount = result.rowCount || 0;
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new Error("Failed to save client");
+  }
+
+  // Determine action based on rowCount and whether it's a new record
+  // rowCount === 0: No changes (data was identical) - treat as no-op
+  // rowCount === 1: Real insert or real update happened
+  const isNewRecord = !clientId || !Number.isFinite(clientId) || clientId <= 0;
+  const action = isNewRecord ? "CREATED" : (rowCount > 0 ? "UPDATED" : "NO_CHANGE");
 
   return {
-    action: "CREATED",
-    client: newClient,
+    action,
+    client: {
+      clientId: row.id,
+      counsellorId: row.counsellor_id,
+      fullName: row.fullname,
+      enrollmentDate: row.date,
+      passportDetails: row.passport_details,
+      leadTypeId: row.lead_type_id,
+    },
+    rowCount, // Include rowCount so controller can check if real change occurred
   };
 };
 
@@ -214,7 +229,7 @@ export const updateClientArchiveStatus = async (
       counsellorId: clientInformation.counsellorId,
       fullName: clientInformation.fullName,
       enrollmentDate: clientInformation.enrollmentDate,
-      saleTypeId: clientInformation.saleTypeId,
+      passportDetails: clientInformation.passportDetails,
       leadTypeId: clientInformation.leadTypeId,
       archived: clientInformation.archived,
       createdAt: clientInformation.createdAt,
@@ -242,32 +257,45 @@ export const getClientFullDetailsById = async (clientId: number) => {
 
   if (!client) return null;
 
-  // 2. Get sale type to check isCoreProduct
-  const [saleType] = await db
-    .select()
-    .from(saleTypes)
-    .where(eq(saleTypes.saleTypeId, client.saleTypeId));
-
+  // 2. Get lead type
   const [leadType] = await db
     .select()
     .from(leadTypes)
     .where(eq(leadTypes.id, client.leadTypeId));
 
-  if (!saleType || !leadType) return null;
-
-  const isCoreProduct = saleType.isCoreProduct;
+  if (!leadType) return null;
 
   // 3. Get enhanced product payments with entity data
   const productPayments = await getProductPaymentsByClientId(clientId);
 
-  // 4. Client payments (only if isCoreProduct is true)
-  let payments: any[] = [];
-  if (isCoreProduct) {
-    payments = await db
-      .select()
-      .from(clientPayments)
-      .where(eq(clientPayments.clientId, clientId));
-  }
+  // 4. Client payments (always fetch)
+  // const payments = await db
+  //   .select()
+  //   .from(clientPayments)
+  //   .where(eq(clientPayments.clientId, clientId));
+
+  const payments = await db
+  .select({
+    paymentId: clientPayments.paymentId,
+    clientId: clientPayments.clientId,
+    totalPayment: clientPayments.totalPayment,
+    stage: clientPayments.stage,
+    amount: clientPayments.amount,
+    paymentDate: clientPayments.paymentDate,
+    invoiceNo: clientPayments.invoiceNo,
+    remarks: clientPayments.remarks,
+    saleType: {
+      id: saleTypes.saleTypeId,
+      saleType: saleTypes.saleType,
+      isCoreProduct: saleTypes.isCoreProduct,
+      amount: saleTypes.amount,
+    },
+    createdAt: clientPayments.createdAt,
+  })
+    .from(clientPayments)
+    .leftJoin(saleTypes, eq(clientPayments.saleTypeId, saleTypes.saleTypeId))
+    .where(eq(clientPayments.clientId, clientId))
+    .orderBy(desc(clientPayments.createdAt));
 
   return {
     client,
@@ -275,13 +303,7 @@ export const getClientFullDetailsById = async (clientId: number) => {
       id: leadType.id,
       leadType: leadType.leadType,
     },
-    saleType: {
-      saleTypeId: saleType.saleTypeId,
-      saleType: saleType.saleType,
-      amount: saleType.amount,
-      isCoreProduct: saleType.isCoreProduct,
-    },
-    payments: isCoreProduct ? payments : null,
+    payments: payments,
     productPayments: productPayments,
   };
 };
@@ -311,14 +333,6 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
     designation: counsellorData[0].designation || null,
   } : null;
 
-  // Get sale types for all clients - fetch all unique saleTypeIds
-  const uniqueSaleTypeIds = [...new Set(clients.map(client => client.saleTypeId))];
-  const saleTypesData = uniqueSaleTypeIds.length > 0 ? await db
-    .select()
-    .from(saleTypes)
-    .where(inArray(saleTypes.saleTypeId, uniqueSaleTypeIds))
-    : [];
-
   // Get lead types for all clients - fetch all unique leadTypeIds
   const uniqueLeadTypeIds = [...new Set(clients.map(client => client.leadTypeId))];
   const leadTypesData = uniqueLeadTypeIds.length > 0 ? await db
@@ -334,9 +348,6 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
         const payments = await getPaymentsByClientId(client.clientId);
         const productPayments = await getProductPaymentsByClientId(client.clientId);
 
-        // Get sale type for this client
-        const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
-
         // Get lead type for this client
         const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
@@ -344,33 +355,20 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
           ...client,
           enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
           counsellor: counsellor,
-          saleType: saleType ? {
-            saleTypeId: saleType.saleTypeId,
-            saleType: saleType.saleType,
-            amount: saleType.amount,
-            isCoreProduct: saleType.isCoreProduct,
-          } : null,
           leadType: leadType ? {
             id: leadType.id,
             leadType: leadType.leadType,
           } : null,
-          payments: saleType?.isCoreProduct ? payments : [],
+          payments: payments,
           productPayments: productPayments || [],
         };
       } catch (error) {
         // Return client with empty arrays if there's an error
-        const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
         const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
         return {
           ...client,
           enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
           counsellor: counsellor,
-          saleType: saleType ? {
-            saleTypeId: saleType.saleTypeId,
-            saleType: saleType.saleType,
-            amount: saleType.amount,
-            isCoreProduct: saleType.isCoreProduct,
-          } : null,
           leadType: leadType ? {
             id: leadType.id,
             leadType: leadType.leadType,
@@ -538,14 +536,6 @@ export const getAllClientsForManager = async (managerId: number) => {
     counsellorsData.map(c => [c.id, { id: c.id, name: c.name, designation: c.designation || null }])
   );
 
-  // Get all unique saleTypeIds and leadTypeIds (for all clients)
-  const uniqueSaleTypeIds = [...new Set(allClients.map(client => client.saleTypeId))];
-  const saleTypesData = uniqueSaleTypeIds.length > 0 ? await db
-    .select()
-    .from(saleTypes)
-    .where(inArray(saleTypes.saleTypeId, uniqueSaleTypeIds))
-    : [];
-
   const uniqueLeadTypeIds = [...new Set(allClients.map(client => client.leadTypeId))];
   const leadTypesData = uniqueLeadTypeIds.length > 0 ? await db
     .select()
@@ -577,39 +567,25 @@ export const getAllClientsForManager = async (managerId: number) => {
             const payments = await getPaymentsByClientId(client.clientId);
             const productPayments = await getProductPaymentsByClientId(client.clientId);
 
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
               } : null,
-              payments: saleType?.isCoreProduct ? payments : [],
+              payments: payments,
               productPayments: productPayments || [],
             };
           } catch (error) {
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
@@ -717,6 +693,25 @@ export const getAllClientsForManager = async (managerId: number) => {
   return result;
 };
 
+// Get all clients
+export const  getAllClients = async () => {
+  const allClients = await db
+    .select()
+    .from(clientInformation)
+    .where(eq(clientInformation.archived, false))
+    .orderBy(desc(clientInformation.createdAt));
+  return allClients;
+};
+
+export const updateClientCounsellor = async (clientId: number, counsellorId: number) => {
+  const result = await db
+    .update(clientInformation)
+    .set({ counsellorId: counsellorId })
+    .where(eq(clientInformation.clientId, clientId))
+    .returning({ clientId: clientInformation.clientId, counsellorId: clientInformation.counsellorId });
+  return result;
+};
+
 /* ==============================
    GET ALL CLIENTS FOR ADMIN (ALL COUNSELLORS)
    Returns: { [counsellorId]: { counsellor: {...}, clients: { [year]: { [month]: {...} } } } }
@@ -754,14 +749,6 @@ export const getAllClientsForAdmin = async () => {
     counsellorsData.map(c => [c.id, { id: c.id, name: c.name, designation: c.designation, isSupervisor: c.isSupervisor, role: c.role || null }])
   );
 
-  // Get all unique saleTypeIds and leadTypeIds (for all clients)
-  const uniqueSaleTypeIds = [...new Set(allClients.map(client => client.saleTypeId))];
-  const saleTypesData = uniqueSaleTypeIds.length > 0 ? await db
-    .select()
-    .from(saleTypes)
-    .where(inArray(saleTypes.saleTypeId, uniqueSaleTypeIds))
-    : [];
-
   const uniqueLeadTypeIds = [...new Set(allClients.map(client => client.leadTypeId))];
   const leadTypesData = uniqueLeadTypeIds.length > 0 ? await db
     .select()
@@ -793,39 +780,25 @@ export const getAllClientsForAdmin = async () => {
             const payments = await getPaymentsByClientId(client.clientId);
             const productPayments = await getProductPaymentsByClientId(client.clientId);
 
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
               } : null,
-              payments: saleType?.isCoreProduct ? payments : [],
+              payments: payments,
               productPayments: productPayments || [],
             };
           } catch (error) {
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
@@ -962,14 +935,6 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
     designation: counsellorData[0].designation || null,
   } : null;
 
-  // Get sale types and lead types
-  const uniqueSaleTypeIds = [...new Set(clients.map(client => client.saleTypeId))];
-  const saleTypesData = uniqueSaleTypeIds.length > 0 ? await db
-    .select()
-    .from(saleTypes)
-    .where(inArray(saleTypes.saleTypeId, uniqueSaleTypeIds))
-    : [];
-
   const uniqueLeadTypeIds = [...new Set(clients.map(client => client.leadTypeId))];
   const leadTypesData = uniqueLeadTypeIds.length > 0 ? await db
     .select()
@@ -984,38 +949,24 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
         const payments = await getPaymentsByClientId(client.clientId);
         const productPayments = await getProductPaymentsByClientId(client.clientId);
 
-        const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
         const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
         return {
           ...client,
           counsellor: counsellor,
-          saleType: saleType ? {
-            saleTypeId: saleType.saleTypeId,
-            saleType: saleType.saleType,
-            amount: saleType.amount,
-            isCoreProduct: saleType.isCoreProduct,
-          } : null,
           leadType: leadType ? {
             id: leadType.id,
             leadType: leadType.leadType,
           } : null,
-          payments: saleType?.isCoreProduct ? payments : [],
+          payments: payments,
           productPayments: productPayments || [],
         };
       } catch (error) {
-        const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
         const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
@@ -1162,14 +1113,6 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
     counsellorsData.map(c => [c.id, { id: c.id, name: c.name, designation: c.designation, isSupervisor: c.isSupervisor, role: c.role || null }])
   );
 
-  // Get all unique saleTypeIds and leadTypeIds
-  const uniqueSaleTypeIds = [...new Set(allClients.map(client => client.saleTypeId))];
-  const saleTypesData = uniqueSaleTypeIds.length > 0 ? await db
-    .select()
-    .from(saleTypes)
-    .where(inArray(saleTypes.saleTypeId, uniqueSaleTypeIds))
-    : [];
-
   const uniqueLeadTypeIds = [...new Set(allClients.map(client => client.leadTypeId))];
   const leadTypesData = uniqueLeadTypeIds.length > 0 ? await db
     .select()
@@ -1199,39 +1142,25 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
             const payments = await getPaymentsByClientId(client.clientId);
             const productPayments = await getProductPaymentsByClientId(client.clientId);
 
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
               } : null,
-              payments: saleType?.isCoreProduct ? payments : [],
+              payments: payments,
               productPayments: productPayments || [],
             };
           } catch (error) {
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
@@ -1375,14 +1304,6 @@ export const getAllArchivedClientsForAdmin = async () => {
     counsellorsData.map(c => [c.id, { id: c.id, name: c.name, designation: c.designation, isSupervisor: c.isSupervisor, role: c.role || null }])
   );
 
-  // Get all unique saleTypeIds and leadTypeIds
-  const uniqueSaleTypeIds = [...new Set(allClients.map(client => client.saleTypeId))];
-  const saleTypesData = uniqueSaleTypeIds.length > 0 ? await db
-    .select()
-    .from(saleTypes)
-    .where(inArray(saleTypes.saleTypeId, uniqueSaleTypeIds))
-    : [];
-
   const uniqueLeadTypeIds = [...new Set(allClients.map(client => client.leadTypeId))];
   const leadTypesData = uniqueLeadTypeIds.length > 0 ? await db
     .select()
@@ -1412,39 +1333,25 @@ export const getAllArchivedClientsForAdmin = async () => {
             const payments = await getPaymentsByClientId(client.clientId);
             const productPayments = await getProductPaymentsByClientId(client.clientId);
 
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,
               } : null,
-              payments: saleType?.isCoreProduct ? payments : [],
+              payments: payments,
               productPayments: productPayments || [],
             };
           } catch (error) {
-            const saleType = saleTypesData.find(st => st.saleTypeId === client.saleTypeId);
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
               counsellor: counsellor,
-              saleType: saleType ? {
-                saleTypeId: saleType.saleTypeId,
-                saleType: saleType.saleType,
-                amount: saleType.amount,
-                isCoreProduct: saleType.isCoreProduct,
-              } : null,
               leadType: leadType ? {
                 id: leadType.id,
                 leadType: leadType.leadType,

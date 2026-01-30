@@ -17,10 +17,12 @@ import { beaconAccount } from "../schemas/beaconAccount.schema";
 import { creditCard } from "../schemas/creditCard.schema";
 import { newSell } from "../schemas/newSell.schema";
 import { visaExtension } from "../schemas/visaExtension.schema";
-import { eq, inArray, and, ne } from "drizzle-orm";
+import { allFinance } from "../schemas/allFinance.schema";
+import { users } from "../schemas/users.schema";
+import { eq, inArray, and, ne, sql } from "drizzle-orm";
 
 // Helper function to safely fetch entities with error handling
-const fetchEntities = async <T extends { id: number }>(
+const fetchEntities = async <T extends { id: number } | { financeId: number }>(
   table: any,
   ids: number[],
   entityType: string
@@ -30,24 +32,28 @@ const fetchEntities = async <T extends { id: number }>(
   }
 
   try {
+    // For allFinance, use financeId field; for others, use id
+    const idField = entityType === "allFinance_id" ? table.financeId : table.id;
+
     const records = await db
       .select()
       .from(table)
       .where(
         ids.length === 1
-          ? eq(table.id, ids[0])
-          : inArray(table.id, ids)
+          ? eq(idField, ids[0])
+          : inArray(idField, ids)
       );
 
-    const map = new Map(records.map((r: T) => {
-      const key = Number(r.id);
+    const map = new Map(records.map((r: any) => {
+      // Handle both id and financeId field names
+      const key = Number(r.financeId ?? r.id);
       return [key, r];
     }));
 
     return map;
   } catch (error) {
-    if (entityType === "newSell_id") {
-      console.error(`[DEBUG] fetchEntities error for newSell:`, error);
+    if (entityType === "newSell_id" || entityType === "allFinance_id") {
+      console.error(`[DEBUG] fetchEntities error for ${entityType}:`, error);
     }
     return new Map();
   }
@@ -78,7 +84,12 @@ export type ProductType =
   | "FOREX_FEES"
   | "TUTION_FEES"
   | "CREDIT_CARD"
-  | "VISA_EXTENSION";
+  | "VISA_EXTENSION"
+  | "REFUSAL_CHARGES"
+  | "KIDS_STUDY_PERMIT"
+  | "CANADA_FUND"
+  | "EMPLOYMENT_VERIFICATION_CHARGES"
+  | "ADDITIONAL_AMOUNT_STATEMENT_CHARGES";
 
 // Entity type enum values
 export type EntityType =
@@ -94,6 +105,7 @@ export type EntityType =
   | "insurance_id"
   | "beaconAccount_id"
   | "creditCard_id"
+  | "allFinance_id"
   | "master_only";
 
 // Map product name to entity type
@@ -110,20 +122,26 @@ const productToEntityTypeMap: Record<ProductType, EntityType> = {
   CREDIT_CARD: "creditCard_id",
   OTHER_NEW_SELL: "newSell_id",
   VISA_EXTENSION: "visaextension_id",
+  // ✅ ALL FINANCE - uses its own table
+  ALL_FINANCE_EMPLOYEMENT: "allFinance_id",
   // Products without specific tables use newSell
   // ✅ MASTER-ONLY PRODUCTS
-  ALL_FINANCE_EMPLOYEMENT: "master_only",
   INDIAN_SIDE_EMPLOYEMENT: "master_only",
   NOC_LEVEL_JOB_ARRANGEMENT: "master_only",
   LAWYER_REFUSAL_CHARGE: "master_only",
   ONSHORE_PART_TIME_EMPLOYEMENT: "master_only",
-  TRV_WORK_PERMIT_EXT_STUDY_PERMIT_EXTENSION: "master_only",
+  TRV_WORK_PERMIT_EXT_STUDY_PERMIT_EXTENSION: "visaextension_id",
   MARRIAGE_PHOTO_FOR_COURT_MARRIAGE: "master_only",
   MARRIAGE_PHOTO_CERTIFICATE: "master_only",
   RECENTE_MARRIAGE_RELATIONSHIP_AFFIDAVIT: "master_only",
   JUDICAL_REVIEW_CHARGE: "master_only",
   SPONSOR_CHARGES: "master_only",
   FINANCE_EMPLOYEMENT: "master_only",
+  REFUSAL_CHARGES: "master_only",
+  KIDS_STUDY_PERMIT: "master_only",
+  CANADA_FUND: "master_only",
+  EMPLOYMENT_VERIFICATION_CHARGES: "master_only",
+  ADDITIONAL_AMOUNT_STATEMENT_CHARGES: "master_only",
 };
 
 // Map entity type to table for validation
@@ -138,6 +156,7 @@ const entityTypeToTable: Record<EntityType, any> = {
   insurance_id: insurance,
   beaconAccount_id: beaconAccount,
   creditCard_id: creditCard,
+  allFinance_id: allFinance,
   newSell_id: newSell,
   visaextension_id: visaExtension,
   master_only:null
@@ -209,8 +228,21 @@ interface BeaconAccountData {
 }
 
 interface CreditCardData {
-  amount: number | string;
+  activatedStatus?: boolean;
+  cardPlan?: string;
+  cardGivingDate?: string;
+  cardActivationDate?: string;
   cardDate?: string;
+  remarks?: string;
+}
+
+interface AllFinanceData {
+  amount: number | string;
+  paymentDate?: string;
+  invoiceNo?: string;
+  partialPayment?: boolean;
+  approvalStatus?: "pending" | "approved" | "rejected";
+  approvedBy?: number;
   remarks?: string;
 }
 
@@ -252,6 +284,7 @@ interface SaveClientProductPaymentInput {
     | InsuranceData
     | BeaconAccountData
     | CreditCardData
+    | AllFinanceData
     | VisaExtensionData
     | NewSellData;
 }
@@ -437,12 +470,60 @@ const createEntityRecord = async (
       const [record] = await db
         .insert(creditCard)
         .values({
-          amount: data.amount.toString(),
+          activatedStatus: data.activatedStatus ?? false,
+          cardPlan: data.cardPlan ?? null,
+          cardGivingDate: data.cardGivingDate ?? null,
+          cardActivationDate: data.cardActivationDate ?? null,
           cardDate: data.cardDate ?? null,
           remarks: data.remarks ?? null,
         })
         .returning();
       return record.id;
+    }
+
+    case "allFinance_id": {
+      const data = entityData as AllFinanceData;
+      const amountValue = typeof data.amount === "string" ? parseFloat(data.amount) : data.amount;
+
+      if (!amountValue || !isFinite(amountValue) || amountValue <= 0) {
+        throw new Error("Valid amount is required for all finance");
+      }
+
+      if (!data.paymentDate) {
+        throw new Error("paymentDate is required for all finance");
+      }
+
+      // Determine approval status based on partialPayment
+      // If partialPayment is true, status is "pending" (needs manager approval)
+      // If partialPayment is false, status is "approved" (auto-approved)
+      const approvalStatus = data.partialPayment === true ? "pending" : (data.approvalStatus || "approved");
+
+      // Check for duplicate invoiceNo if provided
+      if (data.invoiceNo) {
+        const [duplicateCheck] = await db
+          .select({ financeId: allFinance.financeId })
+          .from(allFinance)
+          .where(eq(allFinance.invoiceNo, data.invoiceNo))
+          .limit(1);
+
+        if (duplicateCheck) {
+          throw new Error(`Invoice number "${data.invoiceNo}" already exists. Please use a different invoice number.`);
+        }
+      }
+
+      const [record] = await db
+        .insert(allFinance)
+        .values({
+          amount: amountValue.toString(),
+          paymentDate: data.paymentDate,
+          invoiceNo: data.invoiceNo && data.invoiceNo.trim() !== "" ? data.invoiceNo.trim() : null,
+          partialPayment: data.partialPayment ?? false,
+          approvalStatus: approvalStatus as "pending" | "approved" | "rejected",
+          approvedBy: data.approvedBy && approvalStatus === "approved" ? data.approvedBy : null,
+          remarks: data.remarks && data.remarks.trim() !== "" ? data.remarks.trim() : null,
+        })
+        .returning();
+      return record.financeId;
     }
 
     case "visaextension_id": {
@@ -452,14 +533,19 @@ const createEntityRecord = async (
       }
       // Provide default for NOT NULL field if not provided
       const finalExtensionDate = data.extensionDate || new Date().toISOString().split('T')[0];
+
+      // Normalize invoiceNo and remarks - convert empty strings to null
+      const normalizedInvoiceNo = data.invoiceNo && data.invoiceNo.trim() !== "" ? data.invoiceNo.trim() : null;
+      const normalizedRemarks = data.remarks && data.remarks.trim() !== "" ? data.remarks.trim() : null;
+
       const [record] = await db
         .insert(visaExtension)
         .values({
           type: data.type,
           amount: data.amount.toString(),
           extensionDate: finalExtensionDate,
-          invoiceNo: data.invoiceNo ?? null,
-          remarks: data.remarks ?? null,
+          invoiceNo: normalizedInvoiceNo,
+          remarks: normalizedRemarks,
         })
         .returning();
       return record.id;
@@ -523,6 +609,8 @@ export const saveClientProductPayment = async (
   // ---------------------------
   let amountValue: number | null = null;
 
+  // For master_only products, amount is stored in client_product_payment table
+  // For allFinance_id, amount is stored in all_finance table (handled in entityData)
   if (entityType === "master_only") {
     if (amount === undefined || amount === null) {
       throw new Error("amount is required for master_only products");
@@ -591,10 +679,285 @@ export const saveClientProductPayment = async (
         }
       }
 
-      await db
-        .update(table)
-        .set(cleanEntityData)
-        .where(eq(table.id, existing.entityId));
+      // Transform data for all finance updates
+      if (entityType === "allFinance_id") {
+        const data = cleanEntityData as AllFinanceData;
+
+        // If entityId doesn't exist, create a new all finance record
+        if (!existing.entityId) {
+          if (!data.amount) {
+            throw new Error("amount is required for all finance");
+          }
+          if (!data.paymentDate) {
+            throw new Error("paymentDate is required for all finance");
+          }
+
+          const amountValue = typeof data.amount === "string" ? parseFloat(data.amount) : data.amount;
+          if (!isFinite(amountValue) || amountValue <= 0) {
+            throw new Error("Invalid amount for all finance");
+          }
+
+          const approvalStatus = data.partialPayment === true ? "pending" : (data.approvalStatus || "approved");
+
+          // Check for duplicate invoiceNo if provided
+          if (data.invoiceNo) {
+            const [duplicateCheck] = await db
+              .select({ financeId: allFinance.financeId })
+              .from(allFinance)
+              .where(eq(allFinance.invoiceNo, data.invoiceNo))
+              .limit(1);
+
+            if (duplicateCheck) {
+              throw new Error(`Invoice number "${data.invoiceNo}" already exists. Please use a different invoice number.`);
+            }
+          }
+
+          const [newAllFinance] = await db
+            .insert(allFinance)
+            .values({
+              amount: amountValue.toString(),
+              paymentDate: data.paymentDate,
+              invoiceNo: data.invoiceNo && data.invoiceNo.trim() !== "" ? data.invoiceNo.trim() : null,
+              partialPayment: data.partialPayment ?? false,
+              approvalStatus: approvalStatus as "pending" | "approved" | "rejected",
+              approvedBy: data.approvedBy && approvalStatus === "approved" ? data.approvedBy : null,
+              remarks: data.remarks && data.remarks.trim() !== "" ? data.remarks.trim() : null,
+            })
+            .returning();
+
+          await db
+            .update(clientProductPayments)
+            .set({
+              entityId: newAllFinance.financeId,
+              entityType: "allFinance_id" as any
+            })
+            .where(eq(clientProductPayments.productPaymentId, productPaymentId));
+
+          existing.entityId = newAllFinance.financeId;
+          existing.entityType = "allFinance_id";
+        } else {
+          // Update existing all finance record
+          const [existingAllFinance] = await db
+            .select()
+            .from(allFinance)
+            .where(eq(allFinance.financeId, existing.entityId))
+            .limit(1);
+
+          if (!existingAllFinance) {
+            throw new Error("All finance record not found");
+          }
+
+          // Prepare update data
+          const updateData: any = {};
+
+          // Only allow status changes through approval endpoint, not through regular update
+          // Regular updates can only change other fields, not approval status
+          if (data.amount !== undefined) {
+            const amountValue = typeof data.amount === "string" ? parseFloat(data.amount) : data.amount;
+            if (!isFinite(amountValue) || amountValue <= 0) {
+              throw new Error("Invalid amount for all finance");
+            }
+            updateData.amount = amountValue.toString();
+          }
+
+          if (data.paymentDate !== undefined) {
+            updateData.paymentDate = data.paymentDate;
+          }
+
+          if (data.invoiceNo !== undefined) {
+            const normalizedInvoiceNo = data.invoiceNo && data.invoiceNo.trim() !== "" ? data.invoiceNo.trim() : null;
+
+            // Check for duplicate invoiceNo if changing
+            if (normalizedInvoiceNo && normalizedInvoiceNo !== existingAllFinance.invoiceNo) {
+              const [duplicateCheck] = await db
+                .select({ financeId: allFinance.financeId })
+                .from(allFinance)
+                .where(eq(allFinance.invoiceNo, normalizedInvoiceNo))
+                .limit(1);
+
+              if (duplicateCheck) {
+                throw new Error(`Invoice number "${normalizedInvoiceNo}" already exists. Please use a different invoice number.`);
+              }
+            }
+            updateData.invoiceNo = normalizedInvoiceNo;
+          }
+
+          if (data.partialPayment !== undefined) {
+            updateData.partialPayment = data.partialPayment;
+          }
+
+          if (data.remarks !== undefined) {
+            updateData.remarks = data.remarks && data.remarks.trim() !== "" ? data.remarks.trim() : null;
+          }
+
+          // Note: approvalStatus and approvedBy should only be updated through approval endpoint
+          // Regular updates should not change these fields
+
+          await db
+            .update(allFinance)
+            .set(updateData)
+            .where(eq(allFinance.financeId, existing.entityId));
+        }
+        // Skip to end - allFinance is fully handled above
+      } else if (entityType === "visaextension_id") {
+        const data = cleanEntityData as VisaExtensionData;
+
+        // If entityId doesn't exist, create a new visa extension record
+        if (!existing.entityId) {
+          // Create new visa extension record
+          if (!data.type) {
+            throw new Error("type is required for visa extension");
+          }
+          const finalExtensionDate = data.extensionDate || new Date().toISOString().split('T')[0];
+          if (!data.amount) {
+            throw new Error("amount is required for visa extension");
+          }
+
+          // Normalize invoiceNo - convert empty string to null
+          const normalizedInvoiceNo = data.invoiceNo && data.invoiceNo.trim() !== ""
+            ? data.invoiceNo.trim()
+            : null;
+
+          // Check for duplicate invoiceNo if provided
+          if (normalizedInvoiceNo) {
+            const [duplicateCheck] = await db
+              .select({ id: visaExtension.id })
+              .from(visaExtension)
+              .where(eq(visaExtension.invoiceNo, normalizedInvoiceNo))
+              .limit(1);
+
+            if (duplicateCheck) {
+              throw new Error(`Invoice number "${normalizedInvoiceNo}" already exists in visa extension. Please use a different invoice number.`);
+            }
+          }
+
+          const [newVisaExtension] = await db
+            .insert(visaExtension)
+            .values({
+              type: data.type,
+              amount: data.amount.toString(),
+              extensionDate: finalExtensionDate,
+              invoiceNo: normalizedInvoiceNo,
+              remarks: data.remarks && data.remarks.trim() !== "" ? data.remarks.trim() : null,
+            })
+            .returning();
+
+          // Update the client_product_payment record with the new entityId and entityType
+          await db
+            .update(clientProductPayments)
+            .set({
+              entityId: newVisaExtension.id,
+              entityType: "visaextension_id" as any
+            })
+            .where(eq(clientProductPayments.productPaymentId, productPaymentId));
+
+          // Update the existing object so entityId and entityType are available for later use
+          existing.entityId = newVisaExtension.id;
+          existing.entityType = "visaextension_id";
+        } else {
+          // Update existing visa extension record
+          const [existingVisaExtension] = await db
+            .select()
+            .from(visaExtension)
+            .where(eq(visaExtension.id, existing.entityId))
+            .limit(1);
+
+          if (!existingVisaExtension) {
+            throw new Error("Visa extension record not found");
+          }
+
+          // Prepare transformed data
+          const transformedData: any = {};
+
+          // Type is required - use provided or existing
+          if (data.type !== undefined) {
+            transformedData.type = data.type;
+          } else if (existingVisaExtension.type) {
+            transformedData.type = existingVisaExtension.type;
+          } else {
+            throw new Error("type is required for visa extension");
+          }
+
+          // Convert amount to string if provided
+          if (data.amount !== undefined) {
+            transformedData.amount = data.amount.toString();
+          } else if (existingVisaExtension.amount) {
+            transformedData.amount = existingVisaExtension.amount.toString();
+          }
+
+          // Handle extensionDate - use provided, existing, or default
+          if (data.extensionDate !== undefined) {
+            transformedData.extensionDate = data.extensionDate;
+          } else if (existingVisaExtension.extensionDate) {
+            transformedData.extensionDate = existingVisaExtension.extensionDate;
+          } else {
+            transformedData.extensionDate = new Date().toISOString().split('T')[0];
+          }
+
+          // Handle optional fields - normalize empty strings to null
+          if (data.invoiceNo !== undefined) {
+            transformedData.invoiceNo = data.invoiceNo && data.invoiceNo.trim() !== "" ? data.invoiceNo.trim() : null;
+          }
+          if (data.remarks !== undefined) {
+            transformedData.remarks = data.remarks && data.remarks.trim() !== "" ? data.remarks.trim() : null;
+          }
+
+          await db
+            .update(visaExtension)
+            .set(transformedData)
+            .where(eq(visaExtension.id, existing.entityId));
+        }
+        // Skip to end - visaExtension is fully handled above
+      } else {
+        // For other entity types, handle update or create
+        if (!existing.entityId) {
+          // Entity doesn't exist, create a new one
+          const newEntityId = await createEntityRecord(entityType, cleanEntityData);
+
+          // Update the client_product_payment record with the new entityId and entityType
+          await db
+            .update(clientProductPayments)
+            .set({
+              entityId: newEntityId,
+              entityType: entityType as any
+            })
+            .where(eq(clientProductPayments.productPaymentId, productPaymentId));
+
+          // Update the existing object so entityId and entityType are available for later use
+          existing.entityId = newEntityId;
+          existing.entityType = entityType;
+        } else {
+          // Entity exists, update it
+          await db
+            .update(table)
+            .set(cleanEntityData)
+            .where(eq(table.id, existing.entityId));
+        }
+      }
+    }
+
+    // Normalize invoiceNo for master_only products (convert empty string to null)
+    let normalizedInvoiceNo: string | null = null;
+    if (entityType === "master_only") {
+      if (invoiceNo !== undefined && invoiceNo !== null) {
+        const trimmed = String(invoiceNo).trim();
+        normalizedInvoiceNo = trimmed.length > 0 ? trimmed : null;
+      } else {
+        normalizedInvoiceNo = existing.invoiceNo;
+      }
+    }
+
+    // Check for duplicate invoiceNo if changing (for master_only products)
+    if (entityType === "master_only" && normalizedInvoiceNo !== null && normalizedInvoiceNo !== existing.invoiceNo) {
+      const duplicateCheck = await db
+        .select({ productPaymentId: clientProductPayments.productPaymentId })
+        .from(clientProductPayments)
+        .where(eq(clientProductPayments.invoiceNo, normalizedInvoiceNo))
+        .limit(1);
+
+      if (duplicateCheck.length > 0) {
+        throw new Error(`Invoice number "${normalizedInvoiceNo}" already exists in product payments. Please use a different invoice number.`);
+      }
     }
 
     const [updated] = await db
@@ -612,11 +975,13 @@ export const saveClientProductPayment = async (
             : null,
         invoiceNo:
           entityType === "master_only"
-            ? invoiceNo ?? existing.invoiceNo
+            ? normalizedInvoiceNo
             : null,
         remarks:
           entityType === "master_only"
-            ? remarks ?? existing.remarks
+            ? (remarks !== undefined
+                ? (remarks !== null && String(remarks).trim() !== "" ? String(remarks).trim() : null)
+                : existing.remarks)
             : null,
       })
       .where(eq(clientProductPayments.productPaymentId, productPaymentId))
@@ -638,6 +1003,26 @@ export const saveClientProductPayment = async (
     entityId = await createEntityRecord(entityType, entityData);
   }
 
+  // Normalize invoiceNo for master_only products
+  let normalizedInvoiceNo: string | null = null;
+  if (entityType === "master_only" && invoiceNo !== undefined && invoiceNo !== null) {
+    const trimmed = String(invoiceNo).trim();
+    normalizedInvoiceNo = trimmed.length > 0 ? trimmed : null;
+  }
+
+  // Check for duplicate invoiceNo if provided (for master_only products)
+  if (entityType === "master_only" && normalizedInvoiceNo !== null) {
+    const duplicateCheck = await db
+      .select({ productPaymentId: clientProductPayments.productPaymentId })
+      .from(clientProductPayments)
+      .where(eq(clientProductPayments.invoiceNo, normalizedInvoiceNo))
+      .limit(1);
+
+    if (duplicateCheck.length > 0) {
+      throw new Error(`Invoice number "${normalizedInvoiceNo}" already exists in product payments. Please use a different invoice number.`);
+    }
+  }
+
   const [record] = await db
     .insert(clientProductPayments)
     .values({
@@ -657,11 +1042,11 @@ export const saveClientProductPayment = async (
           : null,
       invoiceNo:
         entityType === "master_only"
-          ? invoiceNo ?? null
+          ? normalizedInvoiceNo
           : null,
       remarks:
         entityType === "master_only"
-          ? remarks ?? null
+          ? (remarks !== undefined && remarks !== null && String(remarks).trim() !== "" ? String(remarks).trim() : null)
           : null,
     })
     .returning();
@@ -743,6 +1128,11 @@ export const getProductPaymentsByClientId = async (clientId: number) => {
     entityMaps.creditCard_id = await fetchEntities(creditCard, entityGroups.creditCard_id, "creditCard_id");
   }
 
+  // ---- ALL FINANCE ----
+  if (entityGroups.allFinance_id) {
+    entityMaps.allFinance_id = await fetchEntities(allFinance, entityGroups.allFinance_id, "allFinance_id");
+  }
+
   // ---- NEW SELL ----
   if (entityGroups.newSell_id) {
     entityMaps.newSell_id = await fetchEntities(newSell, entityGroups.newSell_id, "newSell_id");
@@ -751,6 +1141,38 @@ export const getProductPaymentsByClientId = async (clientId: number) => {
   // ---- VISA EXTENSION ----
   if (entityGroups.visaextension_id) {
     entityMaps.visaextension_id = await fetchEntities(visaExtension, entityGroups.visaextension_id, "visaextension_id");
+  }
+
+  // ---- FETCH APPROVER DATA FOR ALL FINANCE ----
+  // Get approver user data for allFinance entities that have approvedBy
+  const approverMap = new Map<number, any>();
+  if (entityMaps.allFinance_id && entityMaps.allFinance_id.size > 0) {
+    const allFinanceEntities = Array.from(entityMaps.allFinance_id.values());
+    const approverIds: number[] = allFinanceEntities
+      .map((f: any) => f.approvedBy)
+      .filter((id): id is number => typeof id === "number" && !isNaN(id));
+    const uniqueApproverIds = [...new Set(approverIds)];
+
+    if (uniqueApproverIds.length > 0) {
+      const approvers = await db
+        .select({
+          id: users.id,
+          fullName: users.fullName,
+          designation: users.designation,
+          role: users.role,
+        })
+        .from(users)
+        .where(inArray(users.id, uniqueApproverIds));
+
+      approvers.forEach(approver => {
+        approverMap.set(approver.id, {
+          id: approver.id,
+          name: approver.fullName,
+          designation: approver.designation,
+          role: approver.role,
+        });
+      });
+    }
   }
 
   // ---- MERGE ----
@@ -778,6 +1200,15 @@ export const getProductPaymentsByClientId = async (clientId: number) => {
         entity = entityMaps[p.entityType].get(Number(entityIdStr));
       }
 
+      // For allFinance entities, add approver data if approvedBy exists
+      if (p.entityType === "allFinance_id" && entity && entity.approvedBy) {
+        const approver = approverMap.get(entity.approvedBy);
+        entity = {
+          ...entity,
+          approver: approver || null,
+        };
+      }
+
       const result = {
         ...p,
         entity: entity || null,
@@ -791,4 +1222,259 @@ export const getProductPaymentsByClientId = async (clientId: number) => {
       entity: null,
     };
   });
+};
+
+/* ================================
+   GET PENDING ALL FINANCE APPROVALS
+================================ */
+
+export const getPendingAllFinanceApprovals = async () => {
+  // Get all pending finance payments
+  const pendingFinance = await db
+    .select({
+      financeId: allFinance.financeId,
+      amount: allFinance.amount,
+      paymentDate: allFinance.paymentDate,
+      invoiceNo: allFinance.invoiceNo,
+      partialPayment: allFinance.partialPayment,
+      approvalStatus: allFinance.approvalStatus,
+      approvedBy: allFinance.approvedBy,
+      remarks: allFinance.remarks,
+      createdAt: allFinance.createdAt,
+    })
+    .from(allFinance)
+    .where(eq(allFinance.approvalStatus, "pending"))
+    .orderBy(allFinance.createdAt);
+
+  if (pendingFinance.length === 0) {
+    return [];
+  }
+
+  const financeIds = pendingFinance.map(f => f.financeId);
+
+  // Get product payments for these finance records
+  const productPayments = await db
+    .select({
+      productPaymentId: clientProductPayments.productPaymentId,
+      clientId: clientProductPayments.clientId,
+      entityId: clientProductPayments.entityId,
+    })
+    .from(clientProductPayments)
+    .where(
+      and(
+        eq(clientProductPayments.productName, "ALL_FINANCE_EMPLOYEMENT"),
+        inArray(clientProductPayments.entityId, financeIds)
+      )
+    );
+
+  const financeToPaymentMap = new Map(
+    productPayments.map(p => [p.entityId, p])
+  );
+
+  // Get client info
+  const clientIds = [...new Set(productPayments.map(p => p.clientId))];
+  const clients = clientIds.length > 0
+    ? await db
+        .select({
+          clientId: clientInformation.clientId,
+          fullName: clientInformation.fullName,
+          counsellorId: clientInformation.counsellorId,
+        })
+        .from(clientInformation)
+        .where(inArray(clientInformation.clientId, clientIds))
+    : [];
+
+  const clientMap = new Map(clients.map(c => [c.clientId, c]));
+
+  // Get counsellor info
+  const counsellorIds = [...new Set(clients.map(c => c.counsellorId).filter(Boolean))];
+  const counsellors = counsellorIds.length > 0
+    ? await db
+        .select({
+          id: users.id,
+          fullName: users.fullName,
+          managerId: users.managerId,
+        })
+        .from(users)
+        .where(inArray(users.id, counsellorIds))
+    : [];
+
+  const counsellorMap = new Map(counsellors.map(c => [c.id, c]));
+
+  // Get approver info (for non-pending records, though this function only returns pending)
+  // This is for future use if we want to show all records
+  // Filter out null/undefined values and ensure we have valid numbers
+  const approverIds: number[] = pendingFinance
+    .map(f => f.approvedBy)
+    .filter((id): id is number => typeof id === "number" && !isNaN(id));
+  const uniqueApproverIds = [...new Set(approverIds)];
+
+  const approvers = uniqueApproverIds.length > 0
+    ? await db
+        .select({
+          id: users.id,
+          fullName: users.fullName,
+          designation: users.designation,
+          role: users.role,
+        })
+        .from(users)
+        .where(inArray(users.id, uniqueApproverIds))
+    : [];
+
+  const approverMap = new Map(approvers.map(a => [a.id, a]));
+
+  // Combine data
+  return pendingFinance.map(finance => {
+    const productPayment = financeToPaymentMap.get(finance.financeId);
+    const clientId = productPayment?.clientId;
+    const client = clientId ? clientMap.get(clientId) : null;
+    const counsellor = client?.counsellorId ? counsellorMap.get(client.counsellorId) : null;
+    const approver = finance.approvedBy ? approverMap.get(finance.approvedBy) : null;
+
+    return {
+      ...finance,
+      productPaymentId: productPayment?.productPaymentId,
+      client: client ? {
+        clientId: client.clientId,
+        fullName: client.fullName,
+      } : null,
+      counsellor: counsellor ? {
+        id: counsellor.id,
+        fullName: counsellor.fullName,
+        managerId: counsellor.managerId,
+      } : null,
+      approver: approver ? {
+        id: approver.id,
+        name: approver.fullName,
+        designation: approver.designation,
+        role: approver.role,
+      } : null,
+    };
+  });
+};
+
+/* ================================
+   APPROVE ALL FINANCE PAYMENT
+================================ */
+
+export const approveAllFinancePayment = async (
+  financeId: number,
+  approvedBy: number
+) => {
+  // Check if finance record exists and is pending
+  const [finance] = await db
+    .select()
+    .from(allFinance)
+    .where(eq(allFinance.financeId, financeId))
+    .limit(1);
+
+  if (!finance) {
+    throw new Error(`Finance payment not found with financeId: ${financeId}`);
+  }
+
+  if (finance.approvalStatus !== "pending") {
+    throw new Error(`Payment is already ${finance.approvalStatus}`);
+  }
+
+  // Update approval status
+  // Note: allFinance.financeId maps to database column "id"
+  const [updated] = await db
+    .update(allFinance)
+    .set({
+      approvalStatus: "approved",
+      approvedBy: approvedBy,
+    })
+    .where(eq(allFinance.financeId, financeId))
+    .returning();
+
+  if (!updated) {
+    throw new Error(`Failed to update finance payment with financeId: ${financeId}. Update returned no rows.`);
+  }
+
+  // Get approver user data
+  const [approver] = await db
+    .select({
+      id: users.id,
+      fullName: users.fullName,
+      designation: users.designation,
+      role: users.role,
+    })
+    .from(users)
+    .where(eq(users.id, approvedBy))
+    .limit(1);
+
+  console.log(`✅ Approved all finance payment ${financeId} by user ${approvedBy}`);
+
+  return {
+    ...updated,
+    approver: approver ? {
+      id: approver.id,
+      name: approver.fullName,
+      designation: approver.designation,
+      role: approver.role,
+    } : null,
+  };
+};
+
+/* ================================
+   REJECT ALL FINANCE PAYMENT
+================================ */
+
+export const rejectAllFinancePayment = async (
+  financeId: number,
+  approvedBy: number
+) => {
+  // Check if finance record exists and is pending
+  const [finance] = await db
+    .select()
+    .from(allFinance)
+    .where(eq(allFinance.financeId, financeId))
+    .limit(1);
+
+  if (!finance) {
+    throw new Error(`Finance payment not found with financeId: ${financeId}`);
+  }
+
+  if (finance.approvalStatus !== "pending") {
+    throw new Error(`Payment is already ${finance.approvalStatus}`);
+  }
+
+  // Update approval status
+  // Note: allFinance.financeId maps to database column "id"
+  const [updated] = await db
+    .update(allFinance)
+    .set({
+      approvalStatus: "rejected",
+      approvedBy: approvedBy,
+    })
+    .where(eq(allFinance.financeId, financeId))
+    .returning();
+
+  if (!updated) {
+    throw new Error(`Failed to update finance payment with financeId: ${financeId}. Update returned no rows.`);
+  }
+
+  // Get approver user data
+  const [approver] = await db
+    .select({
+      id: users.id,
+      fullName: users.fullName,
+      designation: users.designation,
+      role: users.role,
+    })
+    .from(users)
+    .where(eq(users.id, approvedBy))
+    .limit(1);
+
+  console.log(`✅ Rejected all finance payment ${financeId} by user ${approvedBy}`);
+
+  return {
+    ...updated,
+    approver: approver ? {
+      id: approver.id,
+      name: approver.fullName,
+      designation: approver.designation,
+      role: approver.role,
+    } : null,
+  };
 };
