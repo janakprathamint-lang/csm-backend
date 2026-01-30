@@ -21,6 +21,7 @@ const app: Application = express();
 const allowedOrigins = [
   'https://demo.easyvisa.ai',           // ✅ Deployed frontend
   'https://demo-canada.easyvisa.ai',    // Alternative frontend
+  'https://connect.easyvisa.ai',
   process.env.FRONTEND_URL ?? "http://localhost:5173",
   "http://localhost:4173"
 ].filter(Boolean); // Remove any undefined values
