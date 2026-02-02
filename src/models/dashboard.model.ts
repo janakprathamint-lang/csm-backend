@@ -273,6 +273,32 @@ const getDateRange = (
   return { start, end };
 };
 
+/**
+ * Returns date range for "today only" (current calendar day 00:00:00 to 23:59:59).
+ * Used for: coreSale, coreProduct, revenue.
+ */
+const getTodayOnlyDateRange = (): DateRange => {
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
+/**
+ * Returns "all time" date range (from year 2000 to end of today).
+ * Used for: newEnrollment (total client count), totalPendingAmount (all clients' pending).
+ */
+const getAllTimeDateRange = (): DateRange => {
+  const now = new Date();
+  const start = new Date(2000, 0, 1);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(now);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
 /* ==============================
    TOTAL CLIENTS
 ============================== */
@@ -1542,7 +1568,7 @@ const getChartData = async (
         // Format: "Dec 30", "Dec 31", "Jan 1", etc.
         const monthName = getMonthName(currentDate);
         const day = currentDate.getDate();
-        labels.push(`${monthName} ${day}`);
+        labels.push(`${day}`);
         currentDate.setDate(currentDate.getDate() + 1);
       }
       break;
@@ -1575,7 +1601,7 @@ const getChartData = async (
         periods.push({ start, end });
 
         // Format: "Feb 2025", "Mar 2025", etc.
-        labels.push(`${monthNames[currentMonth]} ${currentYear}`);
+        labels.push(`${monthNames[currentMonth]}`);
 
         currentMonth++;
         if (currentMonth > 11) {
@@ -1712,7 +1738,7 @@ const getChartDataCounsellor = async (
         // Format: "Dec 30", "Dec 31", "Jan 1", etc. (same as admin/manager)
         const monthName = getMonthName(currentDate);
         const day = currentDate.getDate();
-        labels.push(`${monthName} ${day}`);
+        labels.push(`${day}`);
         currentDate.setDate(currentDate.getDate() + 1);
       }
       break;
@@ -1745,7 +1771,7 @@ const getChartDataCounsellor = async (
         periods.push({ start, end });
 
         // Format: "Feb 2025", "Mar 2025", etc. (same as admin/manager)
-        labels.push(`${monthNames[currentMonth]} ${currentYear}`);
+        labels.push(`${monthNames[currentMonth]}`);
 
         currentMonth++;
         if (currentMonth > 11) {
@@ -1809,6 +1835,8 @@ export const getDashboardStats = async (
 ): Promise<DashboardStats> => {
   // Get date ranges
   const dateRange = getDateRange(filter, beforeDate, afterDate);
+  const todayOnlyDateRange = getTodayOnlyDateRange();
+  const allTimeDateRange = getAllTimeDateRange();
 
   // Determine role and build filter
   const roleFilter: RoleBasedFilter | undefined =
@@ -1819,24 +1847,25 @@ export const getDashboardStats = async (
       : undefined;
 
   // Handle Counsellor Dashboard
+  // newEnrollment = today's enrollment count only. totalPendingAmount = all clients. coreSale/coreProduct = today. revenue = today.
   if (userRole === "counsellor" && userId) {
     const [
       coreSaleCount,
       coreProductMetrics,
       otherProductMetrics,
       totalPendingAmount,
-      totalClients,
+      totalClientsCount,
       newEnrollmentCount,
       leaderboardData,
       individualPerformance,
       chartData,
     ] = await Promise.all([
-      getCoreServiceCount(dateRange, roleFilter),
-      getCoreProductMetrics(dateRange, roleFilter),
-      getOtherProductMetrics(dateRange, roleFilter),
-      getPendingAmount(dateRange, roleFilter),
-      getTotalClients(dateRange, roleFilter),
-      getNewEnrollments(filter, dateRange, roleFilter),
+      getCoreServiceCount(todayOnlyDateRange, roleFilter),
+      getCoreProductMetrics(todayOnlyDateRange, roleFilter),
+      getOtherProductMetrics(todayOnlyDateRange, roleFilter),
+      getPendingAmount(allTimeDateRange, roleFilter),
+      getTotalClients(allTimeDateRange, roleFilter),
+      getNewEnrollments("today", todayOnlyDateRange, roleFilter),
       getLeaderboard(new Date().getMonth() + 1, new Date().getFullYear()),
       getIndividualCounsellorPerformance(userId, filter, dateRange),
       getChartDataCounsellor(range || "today", dateRange, roleFilter!),
@@ -1856,7 +1885,7 @@ export const getDashboardStats = async (
         amount: totalPendingAmount.pendingAmount,
       },
       totalClients: {
-        count: totalClients,
+        count: totalClientsCount,
       },
       newEnrollment: {
         count: newEnrollmentCount.count,
@@ -1870,6 +1899,7 @@ export const getDashboardStats = async (
   }
 
   // Handle Admin/Manager Dashboard
+  // newEnrollment = today's enrollment count only. totalPendingAmount = all clients. coreSale/coreProduct/revenue = today only.
   const [
     newEnrollmentCount,
     coreSaleCount,
@@ -1880,12 +1910,12 @@ export const getDashboardStats = async (
     leaderboardData,
     chartData,
   ] = await Promise.all([
-    getNewEnrollments(filter, dateRange, roleFilter),
-    getCoreServiceCount(dateRange, roleFilter),
-    getCoreSaleAmount(dateRange, roleFilter),
-    getCoreProductMetrics(dateRange, roleFilter),
-    getOtherProductMetrics(dateRange, roleFilter),
-    getPendingAmount(dateRange, roleFilter),
+    getNewEnrollments("today", todayOnlyDateRange, roleFilter),
+    getCoreServiceCount(todayOnlyDateRange, roleFilter),
+    getCoreSaleAmount(todayOnlyDateRange, roleFilter),
+    getCoreProductMetrics(todayOnlyDateRange, roleFilter),
+    getOtherProductMetrics(todayOnlyDateRange, roleFilter),
+    getPendingAmount(allTimeDateRange, roleFilter),
     getLeaderboard(new Date().getMonth() + 1, new Date().getFullYear()),
     getChartData(range || "today", dateRange, roleFilter),
   ]);
