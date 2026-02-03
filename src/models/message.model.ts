@@ -1,4 +1,4 @@
-import { db } from "../config/databaseConnection";
+import { db, pool } from "../config/databaseConnection";
 import { messages, messageAcknowledgments } from "../schemas/message.schema";
 import { users } from "../schemas/users.schema";
 import {
@@ -712,11 +712,10 @@ export const deleteOldMessages = async (
   let dbNow: Date | null = null;
   if (isDebugMode) {
     try {
-      const [dbNowResult] = await db.select({ now: sql`NOW()` }).from(sql`(SELECT 1) as dummy`);
-      if (dbNowResult?.now) {
-        dbNow = dbNowResult.now instanceof Date
-          ? dbNowResult.now
-          : new Date(dbNowResult.now as string | number);
+      const result = await pool.query<{ now: Date }>("SELECT NOW() as now");
+      const row = result.rows[0];
+      if (row?.now) {
+        dbNow = row.now instanceof Date ? row.now : new Date(row.now);
       }
     } catch (error) {
       logDebug(`🔍 [CLEANUP DEBUG] Could not get database time: ${error}`);
@@ -748,32 +747,42 @@ export const deleteOldMessages = async (
     });
   }
 
-  // Find messages to delete using database NOW() for accurate comparison
-  // This ensures we use the database server's timezone and clock
-  // Using PostgreSQL's NOW() - INTERVAL to calculate threshold in database timezone
-  const messagesToDelete = await db
-    .select({
-      id: messages.id,
-      createdAt: messages.createdAt,
-    })
-    .from(messages)
-    .where(sql`${messages.createdAt} <= NOW() - INTERVAL ${sql.raw(`'${retentionSeconds} seconds'`)}`);
+  try {
+    // Find messages to delete using database NOW() for accurate comparison
+    const messagesToDelete = await db
+      .select({
+        id: messages.id,
+        createdAt: messages.createdAt,
+      })
+      .from(messages)
+      .where(sql`${messages.createdAt} <= NOW() - INTERVAL ${sql.raw(`'${retentionSeconds} seconds'`)}`);
 
-  if (isDebugMode) {
-    logDebug(`🔍 [CLEANUP DEBUG] Messages found to delete: ${messagesToDelete.length}`);
-  }
+    if (isDebugMode) {
+      logDebug(`🔍 [CLEANUP DEBUG] Messages found to delete: ${messagesToDelete.length}`);
+    }
 
-  if (messagesToDelete.length === 0) {
+    if (messagesToDelete.length === 0) {
+      return { deletedCount: 0, deletedMessageIds: [] };
+    }
+
+    const messageIds = messagesToDelete.map((msg) => msg.id);
+
+    // Delete messages (cascade will handle acknowledgments)
+    await db.delete(messages).where(inArray(messages.id, messageIds));
+
+    return {
+      deletedCount: messageIds.length,
+      deletedMessageIds: messageIds,
+    };
+  } catch (error: any) {
+    // When DB is unreachable, avoid spamming full stack every interval
+    const msg = error?.message ?? String(error);
+    const isDbError = /Failed query|ECONNREFUSED|connection|timeout/i.test(msg);
+    if (isDbError && !isDebugMode) {
+      console.warn("⚠️ Message cleanup skipped (database unavailable).");
+    } else {
+      throw error;
+    }
     return { deletedCount: 0, deletedMessageIds: [] };
   }
-
-  const messageIds = messagesToDelete.map((msg) => msg.id);
-
-  // Delete messages (cascade will handle acknowledgments)
-  await db.delete(messages).where(inArray(messages.id, messageIds));
-
-  return {
-    deletedCount: messageIds.length,
-    deletedMessageIds: messageIds,
-  };
 };

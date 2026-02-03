@@ -75,6 +75,9 @@ pool.on("connect", () => {
 // ✅ Drizzle instance (USE THIS IN CONTROLLERS)
 export const db = drizzle(pool);
 
+// ✅ Raw pool for simple queries (e.g. SELECT NOW()) when Drizzle subquery is problematic
+export { pool };
+
 // ✅ Connection health check (startup)
 export const checkDbConnection = async () => {
   try {

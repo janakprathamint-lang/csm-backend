@@ -1837,6 +1837,8 @@ export const getDashboardStats = async (
   const dateRange = getDateRange(filter, beforeDate, afterDate);
   const todayOnlyDateRange = getTodayOnlyDateRange();
   const allTimeDateRange = getAllTimeDateRange();
+  // Summary cards follow filter: today = today only; weekly/monthly/yearly = that period
+  const summaryDateRange = filter === "today" ? todayOnlyDateRange : dateRange;
 
   // Determine role and build filter
   const roleFilter: RoleBasedFilter | undefined =
@@ -1847,7 +1849,7 @@ export const getDashboardStats = async (
       : undefined;
 
   // Handle Counsellor Dashboard
-  // newEnrollment = today's enrollment count only. totalPendingAmount = all clients. coreSale/coreProduct = today. revenue = today.
+  // Summary cards use summaryDateRange (filter-based). totalPendingAmount = all clients always.
   if (userRole === "counsellor" && userId) {
     const [
       coreSaleCount,
@@ -1860,12 +1862,12 @@ export const getDashboardStats = async (
       individualPerformance,
       chartData,
     ] = await Promise.all([
-      getCoreServiceCount(todayOnlyDateRange, roleFilter),
-      getCoreProductMetrics(todayOnlyDateRange, roleFilter),
-      getOtherProductMetrics(todayOnlyDateRange, roleFilter),
+      getCoreServiceCount(summaryDateRange, roleFilter),
+      getCoreProductMetrics(summaryDateRange, roleFilter),
+      getOtherProductMetrics(summaryDateRange, roleFilter),
       getPendingAmount(allTimeDateRange, roleFilter),
       getTotalClients(allTimeDateRange, roleFilter),
-      getNewEnrollments("today", todayOnlyDateRange, roleFilter),
+      getNewEnrollments(filter, summaryDateRange, roleFilter),
       getLeaderboard(new Date().getMonth() + 1, new Date().getFullYear()),
       getIndividualCounsellorPerformance(userId, filter, dateRange),
       getChartDataCounsellor(range || "today", dateRange, roleFilter!),
@@ -1899,7 +1901,7 @@ export const getDashboardStats = async (
   }
 
   // Handle Admin/Manager Dashboard
-  // newEnrollment = today's enrollment count only. totalPendingAmount = all clients. coreSale/coreProduct/revenue = today only.
+  // Summary cards use summaryDateRange (filter-based). totalPendingAmount = all clients. Revenue = last 7 days when filter is "today", else filter period.
   const [
     newEnrollmentCount,
     coreSaleCount,
@@ -1910,19 +1912,30 @@ export const getDashboardStats = async (
     leaderboardData,
     chartData,
   ] = await Promise.all([
-    getNewEnrollments("today", todayOnlyDateRange, roleFilter),
-    getCoreServiceCount(todayOnlyDateRange, roleFilter),
-    getCoreSaleAmount(todayOnlyDateRange, roleFilter),
-    getCoreProductMetrics(todayOnlyDateRange, roleFilter),
-    getOtherProductMetrics(todayOnlyDateRange, roleFilter),
+    getNewEnrollments(filter, summaryDateRange, roleFilter),
+    getCoreServiceCount(summaryDateRange, roleFilter),
+    getCoreSaleAmount(summaryDateRange, roleFilter),
+    getCoreProductMetrics(summaryDateRange, roleFilter),
+    getOtherProductMetrics(summaryDateRange, roleFilter),
     getPendingAmount(allTimeDateRange, roleFilter),
     getLeaderboard(new Date().getMonth() + 1, new Date().getFullYear()),
     getChartData(range || "today", dateRange, roleFilter),
   ]);
 
-  // Calculate total revenue
-  const totalRevenue =
-    coreSaleAmount + coreProductMetrics.amount + otherProductMetrics.amount;
+  // Revenue: when filter is "today" show last 7 days (weekly); otherwise use same period as cards
+  let totalRevenue: number;
+  if (filter === "today") {
+    const weeklyRange = getDateRange("weekly");
+    const [revenueSale, revenueCore, revenueOther] = await Promise.all([
+      getCoreSaleAmount(weeklyRange, roleFilter),
+      getCoreProductMetrics(weeklyRange, roleFilter),
+      getOtherProductMetrics(weeklyRange, roleFilter),
+    ]);
+    totalRevenue = revenueSale + revenueCore.amount + revenueOther.amount;
+  } else {
+    totalRevenue =
+      coreSaleAmount + coreProductMetrics.amount + otherProductMetrics.amount;
+  }
 
   const adminManagerStats: AdminManagerDashboardStats = {
     newEnrollment: {

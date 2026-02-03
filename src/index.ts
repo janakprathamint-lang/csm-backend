@@ -23,7 +23,7 @@ const allowedOrigins = [
   // 'https://demo-canada.easyvisa.ai',    // Alternative frontend
   'https://connect.easyvisa.ai',
   process.env.FRONTEND_URL ?? "http://localhost:5173",
-  "http://localhost:4173"
+  // "http://localhost:4173"
 ].filter(Boolean); // Remove any undefined values
 
 // Get network IP addresses for CORS
