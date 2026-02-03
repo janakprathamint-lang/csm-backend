@@ -338,6 +338,7 @@ const getCoreServiceCount = async (
   const startTimestamp = dateRange.start.toISOString();
   const endTimestamp = dateRange.end.toISOString();
 
+  // Count by payment date when set (so "today" = payments with paymentDate today, not createdAt)
   // Count DISTINCT clientId (unique clients) who have any payment (INITIAL, BEFORE_VISA, or AFTER_VISA)
   let query = db
     .select({ count: sql<number>`COUNT(DISTINCT ${clientPayments.clientId})` })

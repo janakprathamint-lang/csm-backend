@@ -19,7 +19,7 @@ import { newSell } from "../schemas/newSell.schema";
 import { visaExtension } from "../schemas/visaExtension.schema";
 import { allFinance } from "../schemas/allFinance.schema";
 import { users } from "../schemas/users.schema";
-import { eq, inArray, and, ne, sql } from "drizzle-orm";
+import { eq, inArray, and, ne, sql, desc } from "drizzle-orm";
 
 // Helper function to safely fetch entities with error handling
 const fetchEntities = async <T extends { id: number } | { financeId: number }>(
@@ -1057,10 +1057,12 @@ export const saveClientProductPayment = async (
 
 export const getProductPaymentsByClientId = async (clientId: number) => {
 
+  // Order by payment date first (so "today" filter shows by date), then createdAt for null dates
   const payments = await db
     .select()
     .from(clientProductPayments)
-    .where(eq(clientProductPayments.clientId, clientId));
+    .where(eq(clientProductPayments.clientId, clientId))
+    .orderBy(desc(clientProductPayments.paymentDate), desc(clientProductPayments.createdAt));
 
   if (payments.length === 0) return [];
 

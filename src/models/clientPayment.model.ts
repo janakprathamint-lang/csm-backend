@@ -2,7 +2,7 @@ import { db } from "../config/databaseConnection";
 import pool from "../config/databaseConnection";
 import { clientPayments } from "../schemas/clientPayment.schema";
 import { saleTypes } from "../schemas/saleType.schema";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, desc } from "drizzle-orm";
 
 export type PaymentStage =
   | "INITIAL"
@@ -236,7 +236,8 @@ export const getPaymentsByClientId = async (clientId: number) => {
     })
     .from(clientPayments)
     .leftJoin(saleTypes, eq(clientPayments.saleTypeId, saleTypes.saleTypeId))
-    .where(eq(clientPayments.clientId, clientId));
+    .where(eq(clientPayments.clientId, clientId))
+    .orderBy(desc(clientPayments.paymentDate));
 
   // Transform to include saleType object instead of saleTypeId
   return payments.map((payment) => ({

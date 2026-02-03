@@ -315,7 +315,7 @@ export const getClientFullDetailsById = async (clientId: number) => {
     .from(clientPayments)
     .leftJoin(saleTypes, eq(clientPayments.saleTypeId, saleTypes.saleTypeId))
     .where(eq(clientPayments.clientId, clientId))
-    .orderBy(desc(clientPayments.createdAt));
+    .orderBy(desc(clientPayments.paymentDate));
 
   return {
     client,

@@ -325,6 +325,42 @@ export const getLeaderboard = async (month: number, year: number) => {
     rank: index + 1,
   }));
 
+  // Persist achieved_target and rank to leader_board (so dashboard/API use stored data)
+  // Counsellors without a target row get one created so they still have rank and achieved count
+  const monthStartForDb = new Date(year, month - 1, 1);
+  for (const stat of rankedStats) {
+    const [existing] = await db
+      .select()
+      .from(leaderBoard)
+      .where(
+        and(
+          eq(leaderBoard.counsellor_id, stat.counsellorId),
+          sql`EXTRACT(YEAR FROM ${leaderBoard.createdAt}) = ${year}`,
+          sql`EXTRACT(MONTH FROM ${leaderBoard.createdAt}) = ${month}`
+        )
+      )
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(leaderBoard)
+        .set({
+          achieved_target: stat.enrollments,
+          rank: stat.rank,
+        })
+        .where(eq(leaderBoard.id, existing.id));
+    } else {
+      await db.insert(leaderBoard).values({
+        manager_id: stat.managerId ?? null,
+        counsellor_id: stat.counsellorId,
+        target: 0,
+        achieved_target: stat.enrollments,
+        rank: stat.rank,
+        createdAt: monthStartForDb,
+      });
+    }
+  }
+
   return rankedStats;
 };
 
@@ -545,6 +581,10 @@ export const setTarget = async (
   // Check if target already exists for this counsellor, month, and year
   const startDate = new Date(year, month - 1, 1);
   const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+  const startDateStr = startDate.toISOString().split("T")[0];
+  const endDateStr = endDate.toISOString().split("T")[0];
+  const startTimestamp = startDate.toISOString();
+  const endTimestamp = endDate.toISOString();
 
   const [existingTarget] = await db
     .select()
@@ -558,23 +598,32 @@ export const setTarget = async (
     )
     .limit(1);
 
-  // Calculate achieved target (enrollments for this month/year)
-  const startDateStr = startDate.toISOString().split("T")[0];
-  const endDateStr = endDate.toISOString().split("T")[0];
-
+  // Achieved = distinct clients with INITIAL/BEFORE_VISA/AFTER_VISA payment in this month (not enrollment date)
   const [enrollmentResult] = await db
     .select({
-      count: count(clientInformation.clientId),
+      count: sql<number>`COUNT(DISTINCT ${clientPayments.clientId})`,
     })
-    .from(clientInformation)
+    .from(clientPayments)
+    .innerJoin(
+      clientInformation,
+      eq(clientPayments.clientId, clientInformation.clientId)
+    )
     .where(
-      and(
-        eq(clientInformation.counsellorId, counsellorId),
-        eq(clientInformation.archived, false),
-        gte(clientInformation.enrollmentDate, startDateStr),
-        lte(clientInformation.enrollmentDate, endDateStr)
-      )
-    );
+      sql`(
+        ${clientInformation.counsellorId} = ${counsellorId}
+        AND ${clientInformation.archived} = false
+        AND ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+        AND (
+          (${clientPayments.paymentDate} IS NOT NULL
+            AND ${clientPayments.paymentDate} >= ${startDateStr}
+            AND ${clientPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientPayments.paymentDate} IS NULL
+            AND ${clientPayments.createdAt} >= ${startTimestamp}
+            AND ${clientPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    ) as any;
 
   const achievedTarget = enrollmentResult?.count || 0;
 
@@ -600,7 +649,7 @@ export const setTarget = async (
       target: updated,
     };
   } else {
-    // Create new target
+    // Create new target (set createdAt to 1st of month so EXTRACT(month/year) finds it)
     const [created] = await db
       .insert(leaderBoard)
       .values({
@@ -609,6 +658,7 @@ export const setTarget = async (
         target: target,
         achieved_target: achievedTarget,
         rank: tempRank,
+        createdAt: new Date(year, month - 1, 1),
       })
       .returning();
 
@@ -647,25 +697,39 @@ export const updateTarget = async (targetId: number, target: number) => {
   const month = createdAt.getMonth() + 1;
   const year = createdAt.getFullYear();
 
-  // Recalculate achieved target
+  // Recalculate achieved target (distinct clients with INITIAL/BEFORE_VISA/AFTER_VISA in month)
   const startDate = new Date(year, month - 1, 1);
   const endDate = new Date(year, month, 0, 23, 59, 59, 999);
   const startDateStr = startDate.toISOString().split("T")[0];
   const endDateStr = endDate.toISOString().split("T")[0];
+  const startTimestamp = startDate.toISOString();
+  const endTimestamp = endDate.toISOString();
 
   const [enrollmentResult] = await db
     .select({
-      count: count(clientInformation.clientId),
+      count: sql<number>`COUNT(DISTINCT ${clientPayments.clientId})`,
     })
-    .from(clientInformation)
+    .from(clientPayments)
+    .innerJoin(
+      clientInformation,
+      eq(clientPayments.clientId, clientInformation.clientId)
+    )
     .where(
-      and(
-        eq(clientInformation.counsellorId, existingTarget.counsellor_id),
-        eq(clientInformation.archived, false),
-        gte(clientInformation.enrollmentDate, startDateStr),
-        lte(clientInformation.enrollmentDate, endDateStr)
-      )
-    );
+      sql`(
+        ${clientInformation.counsellorId} = ${existingTarget.counsellor_id}
+        AND ${clientInformation.archived} = false
+        AND ${clientPayments.stage} IN ('INITIAL', 'BEFORE_VISA', 'AFTER_VISA')
+        AND (
+          (${clientPayments.paymentDate} IS NOT NULL
+            AND ${clientPayments.paymentDate} >= ${startDateStr}
+            AND ${clientPayments.paymentDate} <= ${endDateStr})
+          OR
+          (${clientPayments.paymentDate} IS NULL
+            AND ${clientPayments.createdAt} >= ${startTimestamp}
+            AND ${clientPayments.createdAt} <= ${endTimestamp})
+        )
+      )`
+    ) as any;
 
   const achievedTarget = enrollmentResult?.count || 0;
 

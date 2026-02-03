@@ -12,8 +12,7 @@ import { users } from "./users.schema";
       id: bigserial("id", { mode: "number" }).primaryKey(),
 
     manager_id: bigint("manager_id", { mode: "number" })
-        .references(() => users.id)
-        .notNull(),
+        .references(() => users.id),
 
         counsellor_id: bigint("counsellor_id", { mode: "number" })
         .references(() => users.id)
