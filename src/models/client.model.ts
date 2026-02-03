@@ -46,6 +46,26 @@ const formatDateToDDMMYYYY = (date: string | Date | null | undefined): string | 
   }
 };
 
+/**
+ * Get year and short month from enrollment date (for grouping by enrollment, not createdAt).
+ * Handles DB date string (YYYY-MM-DD) or Date. Use for list grouping so clients show under correct month.
+ */
+const getEnrollmentYearMonth = (enrollmentDate: string | Date | null | undefined): { year: string; month: string } | null => {
+  if (!enrollmentDate) return null;
+  try {
+    // PostgreSQL date column is often "YYYY-MM-DD"; Date object also supported
+    const s = typeof enrollmentDate === "string" ? enrollmentDate.trim() : enrollmentDate.toISOString().split("T")[0];
+    const [y, m] = s.split("-");
+    if (!y || !m) return null;
+    const monthNum = parseInt(m, 10);
+    if (monthNum < 1 || monthNum > 12) return null;
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return { year: y, month: monthNames[monthNum - 1] };
+  } catch {
+    return null;
+  }
+};
+
 /* ==============================
    CREATE CLIENT
 ============================== */
@@ -314,7 +334,7 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
     .select()
     .from(clientInformation)
     .where(and(eq(clientInformation.counsellorId, counsellorId), eq(clientInformation.archived, false)))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
 
   // Get counsellor information (id, name, designation)
   const counsellorData = await db
@@ -351,9 +371,12 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
         // Get lead type for this client
         const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
 
+        const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
         return {
           ...client,
           enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+          enrollmentYear: enrollmentYearMonth?.year ?? null,
+          enrollmentMonth: enrollmentYearMonth?.month ?? null,
           counsellor: counsellor,
           leadType: leadType ? {
             id: leadType.id,
@@ -365,9 +388,12 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
       } catch (error) {
         // Return client with empty arrays if there's an error
         const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
+        const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
         return {
           ...client,
           enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+          enrollmentYear: enrollmentYearMonth?.year ?? null,
+          enrollmentMonth: enrollmentYearMonth?.month ?? null,
           counsellor: counsellor,
           leadType: leadType ? {
             id: leadType.id,
@@ -380,35 +406,13 @@ export const getClientsByCounsellor = async (counsellorId: number) => {
     })
   );
 
-  // Group clients by year and month with counts
+  // Group clients by enrollment date (year/month) so clients show under correct month, not current
   const groupedClients: { [year: string]: { [month: string]: { clients: any[], total: number } } } = {};
 
   clientsWithDetails.forEach(client => {
-    // Use original enrollmentDate for grouping (before formatting)
-    const originalDate = client.enrollmentDate;
-    if (!originalDate) return;
-
-    // Parse the formatted date back to Date object for grouping
-    // If it's already formatted as DD-MM-YYYY, parse it
-    let enrollmentDate: Date;
-    if (typeof originalDate === 'string' && originalDate.includes('-') && originalDate.split('-').length === 3) {
-      // Check if it's in DD-MM-YYYY format
-      const parts = originalDate.split('-');
-      if (parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
-        // DD-MM-YYYY format, convert to YYYY-MM-DD for Date parsing
-        enrollmentDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-      } else {
-        enrollmentDate = new Date(originalDate);
-      }
-    } else {
-      enrollmentDate = new Date(originalDate);
-    }
-
-    // Check if date is valid
-    if (isNaN(enrollmentDate.getTime())) return;
-
-    const year = enrollmentDate.getFullYear().toString();
-    const month = enrollmentDate.toLocaleString('default', { month: 'short' });
+    const year = (client as any).enrollmentYear;
+    const month = (client as any).enrollmentMonth;
+    if (!year || !month) return;
 
     if (!groupedClients[year]) {
       groupedClients[year] = {};
@@ -515,7 +519,7 @@ export const getAllClientsForManager = async (managerId: number) => {
     .select()
     .from(clientInformation)
     .where(and(inArray(clientInformation.counsellorId, counsellorIds), eq(clientInformation.archived, false)))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
 
   if (allClients.length === 0) {
     return {};
@@ -568,10 +572,13 @@ export const getAllClientsForManager = async (managerId: number) => {
             const productPayments = await getProductPaymentsByClientId(client.clientId);
 
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
+            const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
 
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -582,9 +589,12 @@ export const getAllClientsForManager = async (managerId: number) => {
             };
           } catch (error) {
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
+            const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -597,47 +607,14 @@ export const getAllClientsForManager = async (managerId: number) => {
         })
       );
 
-      // Group this counsellor's clients by year and month
+      // Group by enrollment date (year/month) so clients show under correct month
       const groupedClients: { [year: string]: { [month: string]: { clients: any[], total: number } } } = {};
-
       clientsWithDetails.forEach(client => {
-        // Use original enrollmentDate for grouping (before formatting)
-        const originalDate = client.enrollmentDate;
-        if (!originalDate) return;
-
-        // Parse the formatted date back to Date object for grouping
-        // If it's already formatted as DD-MM-YYYY, parse it
-        let enrollmentDate: Date;
-        if (typeof originalDate === 'string' && originalDate.includes('-') && originalDate.split('-').length === 3) {
-          // Check if it's in DD-MM-YYYY format
-          const parts = originalDate.split('-');
-          if (parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
-            // DD-MM-YYYY format, convert to YYYY-MM-DD for Date parsing
-            enrollmentDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-          } else {
-            enrollmentDate = new Date(originalDate);
-          }
-        } else {
-          enrollmentDate = new Date(originalDate);
-        }
-
-        // Check if date is valid
-        if (isNaN(enrollmentDate.getTime())) return;
-
-        const year = enrollmentDate.getFullYear().toString();
-        const month = enrollmentDate.toLocaleString('default', { month: 'short' });
-
-        if (!groupedClients[year]) {
-          groupedClients[year] = {};
-        }
-
-        if (!groupedClients[year][month]) {
-          groupedClients[year][month] = {
-            clients: [],
-            total: 0
-          };
-        }
-
+        const year = (client as any).enrollmentYear;
+        const month = (client as any).enrollmentMonth;
+        if (!year || !month) return;
+        if (!groupedClients[year]) groupedClients[year] = {};
+        if (!groupedClients[year][month]) groupedClients[year][month] = { clients: [], total: 0 };
         groupedClients[year][month].clients.push(client);
         groupedClients[year][month].total++;
       });
@@ -699,7 +676,7 @@ export const  getAllClients = async () => {
     .select()
     .from(clientInformation)
     .where(eq(clientInformation.archived, false))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
   return allClients;
 };
 
@@ -722,7 +699,7 @@ export const getAllClientsForAdmin = async () => {
     .select()
     .from(clientInformation)
     .where(eq(clientInformation.archived, false))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
 
   if (allClients.length === 0) {
     return {};
@@ -781,10 +758,13 @@ export const getAllClientsForAdmin = async () => {
             const productPayments = await getProductPaymentsByClientId(client.clientId);
 
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
+            const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
 
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -795,9 +775,12 @@ export const getAllClientsForAdmin = async () => {
             };
           } catch (error) {
             const leadType = leadTypesData.find(lt => lt.id === client.leadTypeId);
+            const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -810,47 +793,14 @@ export const getAllClientsForAdmin = async () => {
         })
       );
 
-      // Group this counsellor's clients by year and month
+      // Group by enrollment date (year/month) so clients show under correct month
       const groupedClients: { [year: string]: { [month: string]: { clients: any[], total: number } } } = {};
-
       clientsWithDetails.forEach(client => {
-        // Use original enrollmentDate for grouping (before formatting)
-        const originalDate = client.enrollmentDate;
-        if (!originalDate) return;
-
-        // Parse the formatted date back to Date object for grouping
-        // If it's already formatted as DD-MM-YYYY, parse it
-        let enrollmentDate: Date;
-        if (typeof originalDate === 'string' && originalDate.includes('-') && originalDate.split('-').length === 3) {
-          // Check if it's in DD-MM-YYYY format
-          const parts = originalDate.split('-');
-          if (parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
-            // DD-MM-YYYY format, convert to YYYY-MM-DD for Date parsing
-            enrollmentDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-          } else {
-            enrollmentDate = new Date(originalDate);
-          }
-        } else {
-          enrollmentDate = new Date(originalDate);
-        }
-
-        // Check if date is valid
-        if (isNaN(enrollmentDate.getTime())) return;
-
-        const year = enrollmentDate.getFullYear().toString();
-        const month = enrollmentDate.toLocaleString('default', { month: 'short' });
-
-        if (!groupedClients[year]) {
-          groupedClients[year] = {};
-        }
-
-        if (!groupedClients[year][month]) {
-          groupedClients[year][month] = {
-            clients: [],
-            total: 0
-          };
-        }
-
+        const year = (client as any).enrollmentYear;
+        const month = (client as any).enrollmentMonth;
+        if (!year || !month) return;
+        if (!groupedClients[year]) groupedClients[year] = {};
+        if (!groupedClients[year][month]) groupedClients[year][month] = { clients: [], total: 0 };
         groupedClients[year][month].clients.push(client);
         groupedClients[year][month].total++;
       });
@@ -916,7 +866,7 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
     .select()
     .from(clientInformation)
     .where(and(eq(clientInformation.counsellorId, counsellorId), eq(clientInformation.archived, true)))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
 
   // Get counsellor information
   const counsellorData = await db
@@ -945,6 +895,7 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
   // Fetch payments and product payments for each client
   const clientsWithDetails = await Promise.all(
     clients.map(async (client) => {
+      const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
       try {
         const payments = await getPaymentsByClientId(client.clientId);
         const productPayments = await getProductPaymentsByClientId(client.clientId);
@@ -953,6 +904,9 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
 
         return {
           ...client,
+          enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+          enrollmentYear: enrollmentYearMonth?.year ?? null,
+          enrollmentMonth: enrollmentYearMonth?.month ?? null,
           counsellor: counsellor,
           leadType: leadType ? {
             id: leadType.id,
@@ -966,6 +920,8 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -978,35 +934,13 @@ export const getArchivedClientsByCounsellor = async (counsellorId: number) => {
     })
   );
 
-  // Group clients by year and month with counts
+  // Group clients by enrollment year and month (use explicit fields, not parsed date)
   const groupedClients: { [year: string]: { [month: string]: { clients: any[], total: number } } } = {};
 
   clientsWithDetails.forEach(client => {
-    // Use original enrollmentDate for grouping (before formatting)
-    const originalDate = client.enrollmentDate;
-    if (!originalDate) return;
-
-    // Parse the formatted date back to Date object for grouping
-    // If it's already formatted as DD-MM-YYYY, parse it
-    let enrollmentDate: Date;
-    if (typeof originalDate === 'string' && originalDate.includes('-') && originalDate.split('-').length === 3) {
-      // Check if it's in DD-MM-YYYY format
-      const parts = originalDate.split('-');
-      if (parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
-        // DD-MM-YYYY format, convert to YYYY-MM-DD for Date parsing
-        enrollmentDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-      } else {
-        enrollmentDate = new Date(originalDate);
-      }
-    } else {
-      enrollmentDate = new Date(originalDate);
-    }
-
-    // Check if date is valid
-    if (isNaN(enrollmentDate.getTime())) return;
-
-    const year = enrollmentDate.getFullYear().toString();
-    const month = enrollmentDate.toLocaleString('default', { month: 'short' });
+    const year = (client as any).enrollmentYear;
+    const month = (client as any).enrollmentMonth;
+    if (!year || !month) return;
 
     if (!groupedClients[year]) {
       groupedClients[year] = {};
@@ -1090,7 +1024,7 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
     .select()
     .from(clientInformation)
     .where(and(inArray(clientInformation.counsellorId, counsellorIds), eq(clientInformation.archived, true)))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
 
   if (allClients.length === 0) {
     return {};
@@ -1138,6 +1072,7 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
 
       const clientsWithDetails = await Promise.all(
         counsellorClients.map(async (client) => {
+          const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
           try {
             const payments = await getPaymentsByClientId(client.clientId);
             const productPayments = await getProductPaymentsByClientId(client.clientId);
@@ -1147,6 +1082,8 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -1160,6 +1097,8 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -1172,35 +1111,13 @@ export const getAllArchivedClientsForManager = async (managerId: number) => {
         })
       );
 
-      // Group by year and month
+      // Group by enrollment year and month (use explicit fields)
       const groupedClients: { [year: string]: { [month: string]: { clients: any[], total: number } } } = {};
 
       clientsWithDetails.forEach(client => {
-        // Use original enrollmentDate for grouping (before formatting)
-        const originalDate = client.enrollmentDate;
-        if (!originalDate) return;
-
-        // Parse the formatted date back to Date object for grouping
-        // If it's already formatted as DD-MM-YYYY, parse it
-        let enrollmentDate: Date;
-        if (typeof originalDate === 'string' && originalDate.includes('-') && originalDate.split('-').length === 3) {
-          // Check if it's in DD-MM-YYYY format
-          const parts = originalDate.split('-');
-          if (parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
-            // DD-MM-YYYY format, convert to YYYY-MM-DD for Date parsing
-            enrollmentDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-          } else {
-            enrollmentDate = new Date(originalDate);
-          }
-        } else {
-          enrollmentDate = new Date(originalDate);
-        }
-
-        // Check if date is valid
-        if (isNaN(enrollmentDate.getTime())) return;
-
-        const year = enrollmentDate.getFullYear().toString();
-        const month = enrollmentDate.toLocaleString('default', { month: 'short' });
+        const year = (client as any).enrollmentYear;
+        const month = (client as any).enrollmentMonth;
+        if (!year || !month) return;
 
         if (!groupedClients[year]) {
           groupedClients[year] = {};
@@ -1277,7 +1194,7 @@ export const getAllArchivedClientsForAdmin = async () => {
     .select()
     .from(clientInformation)
     .where(eq(clientInformation.archived, true))
-    .orderBy(desc(clientInformation.createdAt));
+    .orderBy(desc(clientInformation.enrollmentDate));
 
   if (allClients.length === 0) {
     return {};
@@ -1329,6 +1246,7 @@ export const getAllArchivedClientsForAdmin = async () => {
 
       const clientsWithDetails = await Promise.all(
         counsellorClients.map(async (client) => {
+          const enrollmentYearMonth = getEnrollmentYearMonth(client.enrollmentDate);
           try {
             const payments = await getPaymentsByClientId(client.clientId);
             const productPayments = await getProductPaymentsByClientId(client.clientId);
@@ -1338,6 +1256,8 @@ export const getAllArchivedClientsForAdmin = async () => {
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -1351,6 +1271,8 @@ export const getAllArchivedClientsForAdmin = async () => {
             return {
               ...client,
               enrollmentDate: formatDateToDDMMYYYY(client.enrollmentDate),
+              enrollmentYear: enrollmentYearMonth?.year ?? null,
+              enrollmentMonth: enrollmentYearMonth?.month ?? null,
               counsellor: counsellor,
               leadType: leadType ? {
                 id: leadType.id,
@@ -1363,35 +1285,13 @@ export const getAllArchivedClientsForAdmin = async () => {
         })
       );
 
-      // Group by year and month
+      // Group by enrollment year and month (use explicit fields)
       const groupedClients: { [year: string]: { [month: string]: { clients: any[], total: number } } } = {};
 
       clientsWithDetails.forEach(client => {
-        // Use original enrollmentDate for grouping (before formatting)
-        const originalDate = client.enrollmentDate;
-        if (!originalDate) return;
-
-        // Parse the formatted date back to Date object for grouping
-        // If it's already formatted as DD-MM-YYYY, parse it
-        let enrollmentDate: Date;
-        if (typeof originalDate === 'string' && originalDate.includes('-') && originalDate.split('-').length === 3) {
-          // Check if it's in DD-MM-YYYY format
-          const parts = originalDate.split('-');
-          if (parts[0].length === 2 && parts[1].length === 2 && parts[2].length === 4) {
-            // DD-MM-YYYY format, convert to YYYY-MM-DD for Date parsing
-            enrollmentDate = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
-          } else {
-            enrollmentDate = new Date(originalDate);
-          }
-        } else {
-          enrollmentDate = new Date(originalDate);
-        }
-
-        // Check if date is valid
-        if (isNaN(enrollmentDate.getTime())) return;
-
-        const year = enrollmentDate.getFullYear().toString();
-        const month = enrollmentDate.toLocaleString('default', { month: 'short' });
+        const year = (client as any).enrollmentYear;
+        const month = (client as any).enrollmentMonth;
+        if (!year || !month) return;
 
         if (!groupedClients[year]) {
           groupedClients[year] = {};

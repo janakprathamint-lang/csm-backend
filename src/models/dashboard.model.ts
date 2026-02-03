@@ -308,8 +308,8 @@ const getTotalClients = async (
 ): Promise<number> => {
   const conditions: any[] = [
     eq(clientInformation.archived, false),
-    gte(clientInformation.createdAt, dateRange.start),
-    lte(clientInformation.createdAt, dateRange.end),
+    gte(clientInformation.enrollmentDate, dateRange.start.toISOString().split("T")[0]),
+    lte(clientInformation.enrollmentDate, dateRange.end.toISOString().split("T")[0]),
   ];
 
   const counsellorFilter = filter ? buildCounsellorFilter(filter, clientInformation) : undefined;
@@ -480,11 +480,13 @@ const getPendingAmount = async (
   dateRange: DateRange,
   filter?: RoleBasedFilter
 ): Promise<{ pendingAmount: string; breakdown: { initial: string; beforeVisa: string; afterVisa: string; submittedVisa: string } }> => {
-  // Get clients filtered by date range (only clients created within the period)
+  // Get clients filtered by date range (enrollment date within the period)
+  const startStr = dateRange.start.toISOString().split("T")[0];
+  const endStr = dateRange.end.toISOString().split("T")[0];
   const conditions: any[] = [
     eq(clientInformation.archived, false),
-    gte(clientInformation.createdAt, dateRange.start),
-    lte(clientInformation.createdAt, dateRange.end),
+    gte(clientInformation.enrollmentDate, startStr),
+    lte(clientInformation.enrollmentDate, endStr),
   ];
 
   const counsellorFilter = filter ? buildCounsellorFilter(filter, clientInformation) : undefined;
@@ -617,10 +619,12 @@ const getNewEnrollments = async (
   dateRange: DateRange,
   roleFilter?: RoleBasedFilter
 ): Promise<{ count: number; label: string }> => {
+  const startStr = dateRange.start.toISOString().split("T")[0];
+  const endStr = dateRange.end.toISOString().split("T")[0];
   const conditions: any[] = [
     eq(clientInformation.archived, false),
-    gte(clientInformation.createdAt, dateRange.start),
-    lte(clientInformation.createdAt, dateRange.end),
+    gte(clientInformation.enrollmentDate, startStr),
+    lte(clientInformation.enrollmentDate, endStr),
   ];
 
   const counsellorFilter = roleFilter ? buildCounsellorFilter(roleFilter, clientInformation) : undefined;
